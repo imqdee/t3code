@@ -207,6 +207,30 @@ describe("V2 find state", () => {
     });
   });
 
+  it("opens with a given query from the reading position, replacing the previous one", async () => {
+    queries.results.set(a, messageResult(0));
+    await act(async () => {
+      renderer = create(<Probe environmentId={a} />);
+    });
+    await act(async () => find.open());
+    await act(async () => find.barProps.onQueryChange("old"));
+    find.timelineProps.findPositionReaderRef.current = () => ({ entryId: "bottom", occurrence: 0 });
+    const navigationId = find.timelineProps.findNavigationId;
+    const focusRequestId = find.barProps.focusRequestId;
+    await act(async () => find.open("needle"));
+    expect(find.isOpen).toBe(true);
+    expect(find.barProps.query).toBe("needle");
+    expect(find.barProps.focusRequestId).toBe(focusRequestId + 1);
+    expect(find.timelineProps.findNavigationId).toBeGreaterThan(navigationId);
+    expect(orchestrationEnvironment.threadFind).toHaveBeenLastCalledWith({
+      environmentId: a,
+      input: { threadId, query: "needle", skills: [], start: { entryId: "bottom", occurrence: 0 } },
+    });
+    // Mod+F while open keeps the passed query rather than reading the event as one.
+    await act(async () => requestThreadFindOpen());
+    expect(find.barProps.query).toBe("needle");
+  });
+
   it("cycles cached entries immediately, wraps, and accumulates clicks in one event", async () => {
     const initial = {
       ...messageResult(0),

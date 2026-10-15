@@ -59,40 +59,47 @@ export function useThreadFind({
   if (state.threadKey !== null && (!enabled || state.threadKey !== threadKey))
     setState(CLOSED_FIND);
   const isOpen = enabled && threadKey !== null && state.threadKey === threadKey;
-  const open = useCallback(() => {
-    if (threadKey === null) return;
-    if (!enabled) {
-      toastManager.add({
-        id: "thread-find-unavailable",
-        title: "Thread search is unavailable on this server.",
-        description: "Update the server to enable it.",
-      });
-      return;
-    }
-    const start =
-      state.threadKey === threadKey && state.query.trim()
-        ? findPositionReaderRef.current?.(state.query.trim())
+  /** Reopens with the last query, or searches `query` when given. */
+  const open = useCallback(
+    (query?: string) => {
+      if (threadKey === null) return;
+      if (!enabled) {
+        toastManager.add({
+          id: "thread-find-unavailable",
+          title: "Thread search is unavailable on this server.",
+          description: "Update the server to enable it.",
+        });
+        return;
+      }
+      const nextQuery = query ?? (state.threadKey === threadKey ? state.query : "");
+      const start = nextQuery.trim()
+        ? findPositionReaderRef.current?.(nextQuery.trim())
         : undefined;
-    setState((previous) => {
-      const current = previous.threadKey === threadKey ? previous : CLOSED_FIND;
-      return {
-        ...current,
-        threadKey,
-        focusRequestId: previous.focusRequestId + 1,
-        ...(current.query.trim()
-          ? {
-              start,
-              offset: 0,
-              localSelection: null,
-              navigationId: current.navigationId + 1,
-              requestId: current.navigationId + 1,
-            }
-          : {}),
-      };
-    });
-  }, [enabled, state.query, state.threadKey, threadKey]);
+      setState((previous) => {
+        const current = {
+          ...(previous.threadKey === threadKey ? previous : CLOSED_FIND),
+          ...(query === undefined ? {} : { query }),
+        };
+        return {
+          ...current,
+          threadKey,
+          focusRequestId: previous.focusRequestId + 1,
+          ...(current.query.trim()
+            ? {
+                start,
+                offset: 0,
+                localSelection: null,
+                navigationId: current.navigationId + 1,
+                requestId: current.navigationId + 1,
+              }
+            : {}),
+        };
+      });
+    },
+    [enabled, state.query, state.threadKey, threadKey],
+  );
   const close = useCallback(() => setState(CLOSED_FIND), []);
-  useEffect(() => subscribeThreadFindOpen(open), [open]);
+  useEffect(() => subscribeThreadFindOpen(() => open()), [open]);
 
   const remote = useServerResults(
     isOpen ? thread : null,

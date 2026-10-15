@@ -3181,7 +3181,7 @@ export default function Sidebar() {
   // history stays readable without un-settling, and sending a message or
   // starting a session un-settles server-side.
   const navigateToThread = useCallback(
-    (threadRef: ScopedThreadRef) => {
+    (threadRef: ScopedThreadRef, find?: string) => {
       if (useThreadSelectionStore.getState().selectedThreadKeys.size > 0) {
         clearSelection();
       }
@@ -3192,6 +3192,7 @@ export default function Sidebar() {
       return router.navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
+        ...(find ? { search: { find } } : {}),
       });
     },
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
@@ -3246,9 +3247,16 @@ export default function Sidebar() {
   const selectThreadSearchResult = useCallback(
     (thread: EnvironmentThreadShell) => {
       clearThreadSearch();
-      navigateToThread(scopeThreadRef(thread.environmentId, thread.id));
+      // A content match opens find on it; a title match opens the thread as is.
+      const contentMatch = threadSearchMatchByKey.has(
+        threadSearchMatchKey({ environmentId: thread.environmentId, threadId: thread.id }),
+      );
+      navigateToThread(
+        scopeThreadRef(thread.environmentId, thread.id),
+        contentMatch ? threadSearch.query : undefined,
+      );
     },
-    [clearThreadSearch, navigateToThread],
+    [clearThreadSearch, navigateToThread, threadSearch.query, threadSearchMatchByKey],
   );
   const handleThreadSearchKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {

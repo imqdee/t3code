@@ -1,5 +1,6 @@
 import { ThreadFind, ThreadFindCanvas, type ThreadFindControls } from "./chat/ThreadFindProvider";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
+import { parseThreadFindQuery } from "./chat/threadFind";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
 import {
   resolveBackgroundDraftWorkspaceOptions,
@@ -167,7 +168,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
 import { isMacPlatform } from "../lib/utils";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
@@ -8061,6 +8062,37 @@ export default function ChatView(props: ChatViewProps) {
   const [isThreadFindActive, setIsThreadFindActive] = useState(false);
   const openThreadFind = useCallback(() => threadFindControlsRef.current?.open(), []);
   const closeThreadFind = useCallback(() => threadFindControlsRef.current?.close(), []);
+  const threadFindEnabled =
+    isServerThread && serverConfig?.threadFind === true && !paintOnlyDisplayedTimeline;
+  // ChatView reads the `_chat` layout's search, which the thread route's
+  // validator does not clean, so the raw value is parsed here too.
+  const rawRouteFind = useSearch({ strict: false, select: (search) => search.find as unknown });
+  const hasServerProjection = serverProjection !== null;
+  // A thread search result opens the thread with `?find=`: search it once this
+  // thread's timeline has loaded, then drop it so reload or Back doesn't reopen
+  // find. A server without thread find only drops it.
+  useEffect(() => {
+    if (rawRouteFind === undefined || !isServerThread || serverConfig === null) return;
+    const query = parseThreadFindQuery(rawRouteFind);
+    if (query && serverConfig.threadFind === true) {
+      if (paintOnlyDisplayedTimeline || !hasServerProjection) return;
+      threadFindControlsRef.current?.open(query);
+    }
+    void navigate({
+      to: ".",
+      search: ({ find: _find, ...rest }) => rest,
+      hash: true,
+      state: true,
+      replace: true,
+    });
+  }, [
+    hasServerProjection,
+    isServerThread,
+    navigate,
+    paintOnlyDisplayedTimeline,
+    rawRouteFind,
+    serverConfig,
+  ]);
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
@@ -11498,8 +11530,7 @@ export default function ChatView(props: ChatViewProps) {
               skills: timelineSkills,
               progressive: serverConfig?.threadFindProgressive === true,
               thread: activeThreadRef,
-              enabled:
-                isServerThread && serverConfig?.threadFind === true && !paintOnlyDisplayedTimeline,
+              enabled: threadFindEnabled,
               content: serverProjection ?? undefined,
             }}
             controlsRef={threadFindControlsRef}

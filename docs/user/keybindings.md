@@ -128,7 +128,8 @@ Combine keys with `!` for not, `&&` for and, `||` for or, and parentheses:
 query searches the entire thread, including older messages. Thread search requires server support;
 update an older server to enable it. Select **Retry** if a search fails. It defaults to
 `mod+f` outside terminals and previews. Press **Enter** or **Shift+Enter** to move between matches,
-and **Escape** to close find.
+and **Escape** to close find. Opening a thread from the command palette or sidebar search because
+its messages matched opens find with the same query.
 
 ## Precedence
 

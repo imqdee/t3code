@@ -1391,9 +1391,14 @@ function OpenCommandPaletteDialog(props: {
             : undefined;
         },
         runThread: async (thread) => {
+          const contentMatch = threadContentMatchByKey.get(
+            threadSearchMatchKey({ environmentId: thread.environmentId, threadId: thread.id }),
+          );
           await navigate({
             to: "/$environmentId/$threadId",
             params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+            // A content match opens find on it; a title match opens the thread as is.
+            ...(contentMatch && threadSearch.query ? { search: { find: threadSearch.query } } : {}),
           });
         },
       }),

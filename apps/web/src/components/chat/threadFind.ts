@@ -3,6 +3,15 @@ import type { OrchestrationV2SearchThreadInput, RunId } from "@t3tools/contracts
 export type ThreadFindStart = NonNullable<OrchestrationV2SearchThreadInput["start"]>;
 export type ThreadFindPositionReader = (query: string) => ThreadFindStart | undefined;
 
+/**
+ * Reads the thread route's `?find=` value. A hand-typed `?find=2026` parses as
+ * a number, so numbers are kept as text and anything else is dropped.
+ */
+export function parseThreadFindQuery(value: unknown): string | undefined {
+  if (typeof value !== "string" && typeof value !== "number") return undefined;
+  return String(value).trim().slice(0, 200) || undefined;
+}
+
 /** One occurrence of the query inside a searchable timeline entry. */
 export interface ThreadFindMatch {
   readonly entryId: string;
