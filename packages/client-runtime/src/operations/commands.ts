@@ -779,8 +779,8 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
 
 /**
  * Stop for the thread's latest work: interrupts the active run, or the settled run whose
- * background work still runs. With no run to stop, it ends the thread's pull request
- * watches, the only background work that has no run.
+ * background work still runs. With no run to stop, it ends the thread's pull request and
+ * command watches, the only background work that has no run.
  */
 export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThreadTurn")(function* (
   input: InterruptThreadTurnInput,
@@ -833,6 +833,13 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
           repository: link.repository,
           number: link.number,
           watching: false,
+        });
+      }
+      if ((projection.thread.commandWatches ?? []).length > 0) {
+        result = yield* dispatch({
+          type: "thread.command-watch.stop",
+          commandId: yield* allocateCommandId(result.sequence === 0 ? input : {}),
+          threadId: input.threadId,
         });
       }
       return result;
@@ -1091,6 +1098,20 @@ export const watchThreadPullRequest = Effect.fn("EnvironmentCommands.watchThread
     return yield* dispatch({
       ...input,
       type: "thread.pull-request.watch",
+      commandId: yield* allocateCommandId(input),
+    });
+  },
+);
+export type StopThreadCommandWatchInput = Omit<
+  Extract<OrchestrationV2Command, { type: "thread.command-watch.stop" }>,
+  "type" | "commandId"
+> &
+  CommandMetadata;
+export const stopThreadCommandWatch = Effect.fn("EnvironmentCommands.stopThreadCommandWatch")(
+  function* (input: StopThreadCommandWatchInput) {
+    return yield* dispatch({
+      ...input,
+      type: "thread.command-watch.stop",
       commandId: yield* allocateCommandId(input),
     });
   },

@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -422,4 +423,27 @@ describe("commandName", () => {
     expect(ProcessRunner.commandName("C:\\Program Files\\nodejs\\npx.cmd")).toBe("npx.cmd");
     expect(ProcessRunner.commandName("git")).toBe("git");
   });
+});
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Windows has no SIGTERM to ignore.
+describe.skipIf(process.platform === "win32")("forceKillAfter", () => {
+  it.live(
+    "kills a process that ignores SIGTERM once the timeout fires",
+    () =>
+      Effect.gen(function* () {
+        const runner = yield* ProcessRunner.ProcessRunner;
+        const result = yield* runner.run({
+          command: "/bin/sh",
+          args: ["-c", "trap '' TERM; while :; do sleep 1; done"],
+          timeout: "500 millis",
+          timeoutBehavior: "timedOutResult",
+          forceKillAfter: "500 millis",
+        });
+        expect(result.timedOut).toBe(true);
+      }).pipe(
+        Effect.provide(ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
+        Effect.timeout("10 seconds"),
+      ),
+    15_000,
+  );
 });

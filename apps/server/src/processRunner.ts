@@ -34,6 +34,8 @@ export interface ProcessRunInput {
    * Partial stdout/stderr are not preserved.
    */
   readonly timeoutBehavior?: "error" | "timedOutResult" | undefined;
+  /** After SIGTERM on timeout or interruption, how long until the process is killed outright. */
+  readonly forceKillAfter?: Duration.Input | undefined;
 }
 
 export interface ProcessRunOutput {
@@ -294,6 +296,7 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
             }
           : {}),
         shell: spawnCommand.shell,
+        ...(input.forceKillAfter === undefined ? {} : { forceKillAfter: input.forceKillAfter }),
       }),
     )
     .pipe(

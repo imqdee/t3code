@@ -40,6 +40,7 @@ import {
   presentProviderGoal,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { resolveSubagentPillSegment } from "@t3tools/client-runtime/state/thread-subagents";
+import { commandWatchIdOfTask } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   formatModelSelectionEffort,
   type ProviderSubagentStatus,
@@ -423,6 +424,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     threadId: props.selectedThread.id,
   });
   const agentsSegment = resolveSubagentPillSegment(turnSubagents);
+  const stopCommandWatch = useAtomCommand(threadEnvironment.stopCommandWatch, {
+    reportFailure: true,
+  });
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
   // A provider-native subagent shows status instead of a composer.
   const isProviderSubagent = isProviderNativeSubagentThread(props.selectedThread.source);
@@ -493,6 +497,32 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const pendingBackgroundWork = presentPendingBackgroundWork(
     props.selectedThread.pendingBackgroundTasks,
   );
+  const commandWatches = props.selectedThread.pendingBackgroundTasks.flatMap((task) => {
+    const watchId = commandWatchIdOfTask(task);
+    return watchId === null
+      ? []
+      : [{ watchId, label: task.description?.replace(/^Watching: /u, "") ?? "Command" }];
+  });
+  // The pill is where a waiting thread shows its watches, so it is also where they stop. Android
+  // alerts show at most three buttons, so one choice stops them all.
+  const offerToStopCommandWatches = () =>
+    Alert.alert(
+      commandWatches.length === 1 ? "Stop watching?" : `Stop ${commandWatches.length} watches?`,
+      commandWatches.map((watch) => watch.label).join("\n"),
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Stop watching",
+          style: "destructive",
+          onPress: () =>
+            void stopCommandWatch({
+              environmentId: props.environmentId,
+              input: { threadId: props.selectedThread.id },
+            }),
+        },
+      ],
+      { cancelable: true },
+    );
   const floatingStatus = ((): FloatingWorkingStatus | null => {
     const connectionStatus = connectionFloatingStatus({
       connectionError: props.connectionError,
@@ -549,6 +579,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
           .map((item) => item.label)
           .join(", ")}`,
         waiting: pendingBackgroundWork.waiting,
+        ...(commandWatches.length === 0 ? {} : { onPress: offerToStopCommandWatches }),
       };
     }
     if (props.selectedThread.goal !== null && contentPresentationKind === "ready") {
