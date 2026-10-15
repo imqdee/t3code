@@ -3,10 +3,11 @@ import type {
   OrchestrationV2ProviderThread,
   OrchestrationV2Run,
   OrchestrationV2TurnItem,
+  ThreadCommandWatch,
   ThreadId,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
-import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
+import { isOrchestrationV2WorkActive, THREAD_COMMAND_WATCH_ID_PREFIX } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 
 import { resolveT3McpToolId } from "./t3McpToolPresentation.ts";
@@ -114,6 +115,8 @@ type PendingBackgroundWorkPullRequest = Pick<
   ThreadPullRequestLink,
   "host" | "repository" | "number" | "url" | "source" | "watch"
 >;
+
+type PendingBackgroundWorkCommandWatch = Pick<ThreadCommandWatch, "id" | "label">;
 
 type PendingBackgroundWorkProviderThread = Pick<
   OrchestrationV2ProviderThread,
@@ -239,6 +242,7 @@ export function derivePendingBackgroundWork(input: {
    */
   readonly runs?: ReadonlyArray<PendingBackgroundWorkRun>;
   readonly pullRequests?: ReadonlyArray<PendingBackgroundWorkPullRequest> | undefined;
+  readonly commandWatches?: ReadonlyArray<PendingBackgroundWorkCommandWatch> | undefined;
 }): ReadonlyArray<PendingBackgroundWorkTask> {
   const hasActiveRun =
     input.hasActiveRun ??
@@ -250,7 +254,10 @@ export function derivePendingBackgroundWork(input: {
     return [];
   }
   if (input.latestRun == null) {
-    return pullRequestWatchTasks(input.pullRequests);
+    return [
+      ...pullRequestWatchTasks(input.pullRequests),
+      ...commandWatchTasks(input.commandWatches),
+    ];
   }
   if (!isLatestRunSettledForBackgroundWait(input.latestRun)) {
     return [];
@@ -290,6 +297,7 @@ export function derivePendingBackgroundWork(input: {
   }
 
   for (const task of pullRequestWatchTasks(input.pullRequests)) byTaskId.set(task.taskId, task);
+  for (const task of commandWatchTasks(input.commandWatches)) byTaskId.set(task.taskId, task);
 
   return Array.from(byTaskId.values());
 }
@@ -310,4 +318,23 @@ function pullRequestWatchTasks(
           },
         ],
   );
+}
+
+function commandWatchTasks(
+  watches: ReadonlyArray<PendingBackgroundWorkCommandWatch> | undefined,
+): Array<PendingBackgroundWorkTask> {
+  return (watches ?? []).map((watch) => ({
+    taskId: watch.id,
+    description: `Watching: ${watch.label}`,
+    kind: "monitor" as const,
+  }));
+}
+
+/** The command watch a pending task stands for, so a client can stop it, or null. */
+export function commandWatchIdOfTask(
+  task: Pick<PendingBackgroundWorkTask, "taskId" | "kind">,
+): string | null {
+  return task.kind === "monitor" && task.taskId.startsWith(THREAD_COMMAND_WATCH_ID_PREFIX)
+    ? task.taskId
+    : null;
 }
