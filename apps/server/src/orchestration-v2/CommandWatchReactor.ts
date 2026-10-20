@@ -62,29 +62,31 @@ const mayRun = (
   thread.runtimeMode === "full-access" &&
   thread.interactionMode === "default";
 
-/** The server's own shell, run non-interactively: the server already loaded the login PATH. */
-const shellInvocation = Effect.fnUntraced(function* (command: string) {
+/**
+ * The server's own shell, run non-interactively: the server already loaded the login PATH.
+ * Resolved once, since finding the user's shell can read the account database.
+ */
+const resolveShell = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
   if (platform === "win32") {
-    return {
+    return (command: string) => ({
       command: "powershell.exe",
       args: ["-NoProfile", "-NonInteractive", "-Command", command],
-    };
+    });
   }
   const environment = yield* HostProcess.Environment;
-  return {
-    command: listLoginShellCandidates(platform, environment.SHELL)[0] ?? "/bin/sh",
-    args: ["-c", command],
-  };
+  const shell = listLoginShellCandidates(platform, environment.SHELL)[0] ?? "/bin/sh";
+  return (command: string) => ({ command: shell, args: ["-c", command] });
 });
 
 /**
  * Runs the commands threads watch (`watch_command`) and wakes a thread's agent when one prints
  * something it was not told yet. The shared scheduler looks for due watches every few seconds.
  * A thread runs one watch at a time, and none while a turn is running or queued except a new
- * watch's baseline run, so wakes do not pile up behind a long turn. A stop, settle, archive or permission change that ends a
- * watch interrupts its run when the change's event arrives, or at the next look. Due times and
- * failure counts are kept in memory: a restart runs each watch at the next look.
+ * watch's baseline run, so wakes do not pile up behind a long turn. A stop, settle, archive or
+ * permission change that ends a watch interrupts its run when the change's event arrives, or at
+ * the next look. Due times and failure counts are kept in memory: a restart runs each watch at
+ * the next look.
  */
 export class CommandWatchReactor extends Context.Service<
   CommandWatchReactor,
@@ -106,6 +108,7 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const crypto = yield* Crypto.Crypto;
   const permits = yield* Semaphore.make(CONCURRENT_RUNS);
+  const shellInvocation = yield* resolveShell;
   // Keyed by thread: a thread runs one watch at a time.
   const runs = yield* FiberMap.make<ThreadId, void, never>();
   /** The watch each thread is running. */
@@ -171,7 +174,7 @@ export const make = Effect.gen(function* () {
     if (cwd === null || !(yield* fileSystem.exists(cwd).pipe(Effect.orElseSucceed(() => false)))) {
       return { kind: "failed", reason: "could not run: its working directory is missing" } as const;
     }
-    const shell = yield* shellInvocation(watch.command);
+    const shell = shellInvocation(watch.command);
     return yield* processes
       .run({
         command: shell.command,
