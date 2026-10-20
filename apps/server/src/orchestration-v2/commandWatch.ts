@@ -77,7 +77,7 @@ export function evaluateCommandWatch(
   }
   const output = gated ? "" : run.stdout.trim();
   if (
-    output.length > 0 &&
+    !gated &&
     (run.stdoutTruncated || Buffer.byteLength(output, "utf8") > COMMAND_WATCH_OUTPUT_LIMIT_BYTES)
   ) {
     return { kind: "too-long" };
