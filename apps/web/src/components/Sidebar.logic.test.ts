@@ -12,6 +12,8 @@ import {
   resolveSidebarRowThreadId,
   isSidebarThreadWorking,
   orderItemsByPreferredIds,
+  orderSidebarRows,
+  resolveAdjacentThreadId,
   pinOrderKeyBetween,
   resolveProjectStatusIndicator,
   resolveSidebarSweepKeys,
@@ -1350,5 +1352,46 @@ describe("resolveSidebarRouteReveal", () => {
         findThread,
       }),
     ).toEqual({ pendingKey: hiddenKey, widensScope: false });
+  });
+});
+
+describe("orderSidebarRows", () => {
+  const rows = {
+    pinned: ["pinned"],
+    active: ["active-1", "active-2"],
+    working: ["working"],
+    snoozed: ["snoozed-1", "snoozed-2"],
+    settled: ["settled"],
+  };
+  const collapsed = { working: false, snoozed: false, settled: false };
+  const order = (routeThreadKey: string | null) =>
+    orderSidebarRows({ rows, expanded: collapsed, routeThreadKey, keyOf: (row) => row });
+  const step = (from: string, direction: "next" | "previous") => {
+    const { traversal } = order(from);
+    return resolveAdjacentThreadId({ threadIds: traversal, currentThreadId: from, direction });
+  };
+
+  it("walks next from the active list into collapsed shelves, one shelf after another", () => {
+    expect(step("active-2", "next")).toBe("working");
+    expect(step("working", "next")).toBe("snoozed-1");
+    expect(step("snoozed-2", "next")).toBe("settled");
+    expect(step("settled", "previous")).toBe("snoozed-2");
+    expect(step("working", "previous")).toBe("active-2");
+  });
+
+  it("draws only the row it landed on in a collapsed shelf, and none after leaving", () => {
+    expect(order("snoozed-2").snoozed).toEqual(["snoozed-2"]);
+    expect(order("snoozed-2").visible).toEqual(["pinned", "active-1", "active-2", "snoozed-2"]);
+    expect(order("settled").snoozed).toEqual([]);
+  });
+
+  it("numbers only the drawn rows, so number jumps skip collapsed shelves", () => {
+    const expanded = orderSidebarRows({
+      rows,
+      expanded: { working: true, snoozed: false, settled: true },
+      routeThreadKey: null,
+      keyOf: (row) => row,
+    });
+    expect(expanded.visible).toEqual(["pinned", "active-1", "active-2", "working", "settled"]);
   });
 });

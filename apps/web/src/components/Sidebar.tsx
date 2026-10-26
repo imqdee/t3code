@@ -169,6 +169,7 @@ import {
   orderItemsByPreferredIds,
   planSidebarThreadDrop,
   reduceSidebarProjectScopeMenuState,
+  orderSidebarRows,
   resolveAdjacentThreadId,
   resolveSidebarSweepKeys,
   resolveSidebarDropTarget,
@@ -286,7 +287,6 @@ const sidebarProviderEntriesAtom = Atom.make((get) => {
 }).pipe(Atom.withLabel("sidebar-provider-entries"));
 
 const EMPTY_PROVIDER_ENTRIES: ReadonlyMap<string, SidebarProviderEntry> = new Map();
-const EMPTY_THREADS: readonly EnvironmentThreadShell[] = [];
 
 const SETTLED_TAIL_INITIAL_COUNT = 10;
 const SETTLED_TAIL_PAGE_COUNT = 25;
@@ -353,15 +353,6 @@ function resolveDraggedOrders(input: {
         ).map(threadShellKey)
       : undefined,
   };
-}
-
-function routeThreadOnly(
-  threads: readonly EnvironmentThreadShell[],
-  routeThreadKey: string | null,
-): readonly EnvironmentThreadShell[] {
-  if (routeThreadKey === null) return EMPTY_THREADS;
-  const routeThread = threads.find((thread) => threadShellKey(thread) === routeThreadKey);
-  return routeThread === undefined ? EMPTY_THREADS : [routeThread];
 }
 
 // Separate hooks cache maps independently of later Sidebar hooks and preserve dnd-kit inputs.
@@ -448,22 +439,23 @@ function useSidebarThreads(input: {
     }
     return visible.length === settledThreads.length ? settledThreads : visible;
   })();
-  const renderedSettledThreads = settledShelfExpanded
-    ? visibleSettledThreads
-    : routeThreadOnly(visibleSettledThreads, routeRowThreadKey);
-  const visibleSnoozedThreads = snoozedShelfExpanded
-    ? snoozedThreads
-    : routeThreadOnly(snoozedThreads, routeRowThreadKey);
-  const visibleWorkingThreads = workingShelfExpanded
-    ? workingThreads
-    : routeThreadOnly(workingThreads, routeRowThreadKey);
-  const orderedThreads = [
-    ...pinnedThreads,
-    ...activeThreads,
-    ...visibleWorkingThreads,
-    ...visibleSnoozedThreads,
-    ...renderedSettledThreads,
-  ];
+  const rowOrder = orderSidebarRows({
+    rows: {
+      pinned: pinnedThreads,
+      active: activeThreads,
+      working: workingThreads,
+      snoozed: snoozedThreads,
+      settled: visibleSettledThreads,
+    },
+    expanded: {
+      working: workingShelfExpanded,
+      snoozed: snoozedShelfExpanded,
+      settled: settledShelfExpanded,
+    },
+    routeThreadKey: routeRowThreadKey,
+    keyOf: threadShellKey,
+  });
+  const orderedThreads = rowOrder.visible;
   const sectionByThreadKey = new Map<string, SidebarSection>();
   for (const [list, section] of [
     [pinnedThreads, "pinned"],
@@ -500,10 +492,11 @@ function useSidebarThreads(input: {
     toggleSnoozedShelf: () => setSnoozedShelfExpanded((value) => !value),
     workingShelfExpanded,
     toggleWorkingShelf: () => setWorkingShelfExpanded((value) => !value),
-    renderedSettledThreads,
-    visibleSnoozedThreads,
-    visibleWorkingThreads,
+    renderedSettledThreads: rowOrder.settled,
+    visibleSnoozedThreads: rowOrder.snoozed,
+    visibleWorkingThreads: rowOrder.working,
     orderedThreadKeys: orderedThreads.map(threadShellKey),
+    traversalThreads: rowOrder.traversal,
     threadByKey: new Map(orderedThreads.map((thread) => [threadShellKey(thread), thread] as const)),
     settledThreadKeys: new Set(settledThreads.map(threadShellKey)),
     snoozedThreadKeys: new Set(snoozedThreads.map(threadShellKey)),
@@ -1123,6 +1116,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     visibleSnoozedThreads,
     visibleWorkingThreads,
     orderedThreadKeys,
+    traversalThreads,
     threadByKey,
     settledThreadKeys,
     snoozedThreadKeys,
@@ -2623,7 +2617,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       });
       const navigateToThreadKey = (targetThreadKey: string | null) => {
         if (!targetThreadKey) return false;
-        const targetThread = threadByKey.get(targetThreadKey);
+        const targetThread =
+          threadByKey.get(targetThreadKey) ??
+          traversalThreads.find((thread) => threadShellKey(thread) === targetThreadKey);
         if (!targetThread) return false;
         event.preventDefault();
         event.stopPropagation();
@@ -2634,7 +2630,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       if (traversalDirection !== null) {
         navigateToThreadKey(
           resolveAdjacentThreadId({
-            threadIds: orderedThreadKeys,
+            threadIds: traversalThreads.map(threadShellKey),
             currentThreadId: routeRowThreadKey,
             direction: traversalDirection,
           }),
@@ -2654,6 +2650,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     routeRowThreadKey,
     routeTerminalOpen,
     threadByKey,
+    traversalThreads,
   ]);
 
   const shouldShowJumpHintsNow = shouldShowThreadJumpHintsForModifiers(

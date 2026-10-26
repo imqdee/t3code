@@ -787,6 +787,46 @@ export function getSidebarThreadIdsToPrewarm<TThreadId>(
   return visibleThreadIds.slice(0, Math.max(0, limit));
 }
 
+const NO_ROWS: readonly never[] = [];
+
+export interface SidebarShelfRows<T> {
+  readonly pinned: readonly T[];
+  readonly active: readonly T[];
+  readonly working: readonly T[];
+  readonly snoozed: readonly T[];
+  readonly settled: readonly T[];
+}
+
+export function orderSidebarRows<T>(input: {
+  readonly rows: SidebarShelfRows<T>;
+  readonly expanded: {
+    readonly working: boolean;
+    readonly snoozed: boolean;
+    readonly settled: boolean;
+  };
+  readonly routeThreadKey: string | null;
+  readonly keyOf: (row: T) => string;
+}) {
+  const { rows, expanded, routeThreadKey, keyOf } = input;
+  const routeRowOnly = (shelf: readonly T[]): readonly T[] => {
+    const routeRow =
+      routeThreadKey === null ? undefined : shelf.find((row) => keyOf(row) === routeThreadKey);
+    return routeRow === undefined ? NO_ROWS : [routeRow];
+  };
+  const working = expanded.working ? rows.working : routeRowOnly(rows.working);
+  const snoozed = expanded.snoozed ? rows.snoozed : routeRowOnly(rows.snoozed);
+  const settled = expanded.settled ? rows.settled : routeRowOnly(rows.settled);
+  return {
+    working,
+    snoozed,
+    settled,
+    // What is drawn, so number jumps match their hints.
+    visible: [...rows.pinned, ...rows.active, ...working, ...snoozed, ...settled],
+    // Next/previous also enter collapsed shelves, which draw the row they land on.
+    traversal: [...rows.pinned, ...rows.active, ...rows.working, ...rows.snoozed, ...rows.settled],
+  };
+}
+
 export function resolveAdjacentThreadId<T>(input: {
   threadIds: readonly T[];
   currentThreadId: T | null;
