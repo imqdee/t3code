@@ -159,3 +159,40 @@ describe("GitHub media URLs", () => {
     }
   });
 });
+
+describe("GitHub relative links", () => {
+  const page = "https://github.com/owner/repo/pull/7";
+  const resolve = (url: string) => definition.resolveRelativeUrl(url, page);
+
+  it("reads a destination the way the pull request page does", () => {
+    expect(resolve("../blob/0ad519b/shot.png?raw=true")).toBe(
+      "https://github.com/owner/repo/blob/0ad519b/shot.png?raw=true",
+    );
+    expect(resolve("../../other/blob/main/a.png")).toBe(
+      "https://github.com/owner/other/blob/main/a.png",
+    );
+    expect(resolve("/owner/repo/raw/main/a.png")).toBe(
+      "https://github.com/owner/repo/raw/main/a.png",
+    );
+    expect(
+      definition.resolveRelativeUrl(
+        "../issues/3",
+        "https://ghe.example.test:8443/acme/web/pull/42",
+      ),
+    ).toBe("https://ghe.example.test:8443/acme/web/issues/3");
+  });
+
+  it("leaves a destination that is absolute, an anchor, or lands under the pull route", () => {
+    for (const url of [
+      "https://example.com/shot.png",
+      "//example.com/shot.png",
+      "/\\example.com/shot.png",
+      "#notes",
+      "mailto:someone@example.com",
+      "shot.png",
+      "./docs/shot.png",
+    ]) {
+      expect(resolve(url), url).toBeNull();
+    }
+  });
+});

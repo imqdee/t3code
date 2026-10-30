@@ -26,6 +26,17 @@ const ISSUE_PATH = /^\/([^/]+\/[^/]+)\/issues\/(\d+)(?:\/|$)/u;
 
 const KIND = SourceControlProviderKind.make("github");
 
+/**
+ * GitHub keeps a description's link as written and the browser reads it against the pull request
+ * page. A bare or `./` destination lands below `/pull/`, where GitHub serves nothing.
+ */
+function resolveGitHubRelativeUrl(url: string, changeRequestUrl: string): string | null {
+  if (!/^(?:\.\.\/|\/(?![/\\]))/u.test(url)) return null;
+  const page = URL.parse(changeRequestUrl);
+  const resolved = page ? URL.parse(url, page.href) : null;
+  return resolved && resolved.origin === page?.origin ? resolved.href : null;
+}
+
 function isGitHubHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
   return (
@@ -147,5 +158,6 @@ export const definition = defineSourceControl({
   canReadChangeRequestOnHost: (identity, link) =>
     isChangeRequestOnProjectHost(projectChangeRequestHost(identity, KIND), identity, link),
   mediaUrl: gitHubMediaUrl,
+  resolveRelativeUrl: resolveGitHubRelativeUrl,
   settings,
 });
