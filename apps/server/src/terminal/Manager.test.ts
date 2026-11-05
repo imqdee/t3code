@@ -3,6 +3,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_TERMINAL_ID,
+  EnvironmentId,
+  type TerminalSummary,
   type TerminalAttachStreamEvent,
   type TerminalEvent,
   type TerminalOpenInput,
@@ -675,6 +677,33 @@ it.layer(
         { type: "snapshot", snapshot: expect.objectContaining({ status: "running" }) },
       ]);
       expect(ptyAdapter.spawnInputs).toHaveLength(1);
+    }),
+  );
+
+  it.effect("keeps the origin environment a terminal was first opened from", () =>
+    Effect.gen(function* () {
+      const { manager } = yield* createManager();
+      const originEnvironmentId = EnvironmentId.make("environment-origin");
+      const unsubscribe = yield* manager.attachStream(
+        { ...openInput(), originEnvironmentId, resume: true },
+        () => Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      yield* manager.open(
+        openInput({ originEnvironmentId: EnvironmentId.make("environment-other") }),
+      );
+      yield* manager.open(openInput({ terminalId: "term-2" }));
+
+      const metadata = yield* Deferred.make<ReadonlyArray<TerminalSummary>>();
+      yield* manager.subscribeMetadata((event) =>
+        event.type === "snapshot"
+          ? Deferred.succeed(metadata, event.terminals).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      const terminals = yield* Deferred.await(metadata);
+      const byId = new Map(terminals.map((terminal) => [terminal.terminalId, terminal]));
+      expect(byId.get(DEFAULT_TERMINAL_ID)?.originEnvironmentId).toBe(originEnvironmentId);
+      expect(byId.get("term-2")).not.toHaveProperty("originEnvironmentId");
     }),
   );
 

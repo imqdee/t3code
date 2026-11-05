@@ -58,6 +58,7 @@ vi.mock("../state/terminalSessions", async () => {
 });
 vi.mock("../state/session", () => ({
   useEnvironmentScope: () => true,
+  useEnvironmentsWithScope: () => new Set(),
   readEnvironmentScope: () => true,
 }));
 vi.mock("../state/use-atom-command", () => ({

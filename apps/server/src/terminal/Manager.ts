@@ -17,6 +17,7 @@ import {
   TerminalResizeError,
   TerminalSessionLookupError,
   TerminalWriteError,
+  type EnvironmentId,
   type TerminalAttachInput,
   type TerminalAttachStreamEvent,
   type TerminalClearInput,
@@ -304,6 +305,7 @@ interface TerminalSessionState {
   hasRunningSubprocess: boolean;
   childCommandLabel: string | null;
   runtimeEnv: Record<string, string> | null;
+  originEnvironmentId: EnvironmentId | null;
 }
 
 interface TerminalGrid {
@@ -415,6 +417,9 @@ function summary(session: TerminalSessionState): TerminalSummary {
     hasRunningSubprocess: session.hasRunningSubprocess,
     label: terminalWireLabel(session),
     updatedAt: session.updatedAt,
+    ...(session.originEnvironmentId !== null
+      ? { originEnvironmentId: session.originEnvironmentId }
+      : {}),
   };
 }
 
@@ -2871,6 +2876,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         hasRunningSubprocess: false,
         childCommandLabel: null,
         runtimeEnv: normalizedRuntimeEnv(input.env),
+        originEnvironmentId: input.originEnvironmentId ?? null,
       };
 
       const createdSession = session;

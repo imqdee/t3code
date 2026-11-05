@@ -21,10 +21,18 @@ import {
 } from "../rightPanelStore";
 import { useProject, useQuietThreadShell } from "../state/entities";
 import { useEnvironmentScope } from "../state/session";
+import { useEnvironments } from "../state/environments";
 import { useKnownTerminalSessions } from "../state/terminalSessions";
-import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
+import {
+  selectThreadRemoteTerminals,
+  selectThreadTerminalUiState,
+  useTerminalUiStateStore,
+} from "../terminalUiStateStore";
+import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
+import { drawerServerTerminalIds } from "./PersistentThreadTerminals.logic";
+import { NewTerminalMachineMenu } from "./terminal/NewTerminalMachineMenu";
 import { useThreadTerminalActions } from "./terminal/useThreadTerminalActions";
-import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
+import ThreadTerminalDrawer, { type RemoteTerminalPresentation } from "./ThreadTerminalDrawer";
 import { resolveTerminalWorktreePath } from "./ChatView.logic";
 
 /** Where a drawer or panel opens new terminals when a script run overrides the thread's own. */
@@ -70,7 +78,7 @@ function serverTerminalIdsStrictSubsetOfClient(
 interface TerminalLaunchLocationWithEnv {
   readonly cwd: string;
   readonly worktreePath: string | null;
-  readonly runtimeEnv: Record<string, string>;
+  readonly runtimeEnv?: Record<string, string>;
 }
 
 interface PersistentThreadTerminalDrawerProps {
@@ -149,9 +157,33 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
       }),
     });
   }
-  const serverOrderedTerminalIds = drawerTerminalSessions.map(
-    (session) => session.target.terminalId,
+  const remoteTerminals = useTerminalUiStateStore((state) =>
+    selectThreadRemoteTerminals(state.remoteTerminalsByThreadKey, threadRef),
   );
+  const { environments } = useEnvironments();
+  const remoteTerminalsById = new Map<string, RemoteTerminalPresentation>();
+  for (const [terminalId, remote] of Object.entries(remoteTerminals)) {
+    const environment = environments.find(
+      (candidate) => candidate.environmentId === remote.environmentId,
+    );
+    remoteTerminalsById.set(terminalId, {
+      environmentId: remote.environmentId,
+      environmentLabel: environment
+        ? resolveEnvironmentOptionLabel({
+            isPrimary: environment.entry.target._tag === "PrimaryConnectionTarget",
+            environmentId: remote.environmentId,
+            runtimeLabel: environment.label,
+          })
+        : remote.environmentId,
+    });
+    // The open sent only a cwd. Attach sends the same, so a session it recreates matches.
+    terminalLaunchLocationsById.set(terminalId, { cwd: remote.cwd, worktreePath: null });
+  }
+  const serverOrderedTerminalIds = drawerServerTerminalIds({
+    localIds: drawerTerminalSessions.map((session) => session.target.terminalId),
+    remoteTerminals,
+    clientIds: terminalUiState.terminalIds,
+  });
   const storeSetTerminalHeight = useTerminalUiStateStore((state) => state.setTerminalHeight);
   const storeSplitTerminal = useTerminalUiStateStore((state) => state.splitTerminal);
   const storeSplitTerminalVertical = useTerminalUiStateStore(
@@ -205,11 +237,41 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
     if (visible) focusTerminal(threadRef, launched.terminalId);
     void launched.result;
   };
-  const splitTerminal = useStableCallback(() =>
-    launchDrawerTerminal((terminalId) => storeSplitTerminal(threadRef, terminalId)),
-  );
-  const splitTerminalVertical = useStableCallback(() =>
-    launchDrawerTerminal((terminalId) => storeSplitTerminalVertical(threadRef, terminalId)),
+  const launchRemoteDrawerTerminal = (
+    environmentId: EnvironmentId,
+    place: Parameters<typeof terminalActions.launchRemoteTerminal>[0]["place"],
+    cwdOverride?: string,
+  ) => {
+    void terminalActions
+      .launchRemoteTerminal({
+        environmentId,
+        place,
+        ...(cwdOverride !== undefined ? { cwd: cwdOverride } : {}),
+      })
+      .then((launched) => {
+        if (launched && visible) focusTerminal(threadRef, launched.terminalId);
+      });
+  };
+  // A split follows the active terminal's machine and directory.
+  const splitDrawerTerminal = (direction: "horizontal" | "vertical") => {
+    const split = direction === "vertical" ? storeSplitTerminalVertical : storeSplitTerminal;
+    const remote = remoteTerminals[terminalUiState.activeTerminalId];
+    if (remote) {
+      launchRemoteDrawerTerminal(
+        remote.environmentId,
+        (terminalId, placed) => split(threadRef, terminalId, placed),
+        remote.cwd,
+      );
+      return;
+    }
+    launchDrawerTerminal((terminalId) => split(threadRef, terminalId));
+  };
+  const splitTerminal = useStableCallback(() => splitDrawerTerminal("horizontal"));
+  const splitTerminalVertical = useStableCallback(() => splitDrawerTerminal("vertical"));
+  const createRemoteTerminal = useStableCallback((environmentId: EnvironmentId) =>
+    launchRemoteDrawerTerminal(environmentId, (terminalId, placed) =>
+      storeNewTerminal(threadRef, terminalId, placed),
+    ),
   );
   const createNewTerminal = useStableCallback(() =>
     launchDrawerTerminal((terminalId) => storeNewTerminal(threadRef, terminalId)),
@@ -221,7 +283,7 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
   };
 
   const closeTerminal = useStableCallback((terminalId: string) => {
-    if (!terminalActions.canWrite()) return;
+    if (remoteTerminals[terminalId] === undefined && !terminalActions.canWrite()) return;
     terminalActions.closeTerminalSession(terminalId);
     storeCloseTerminal(threadRef, terminalId);
     if (visible) focusActiveDrawerTerminal(threadRef);
@@ -277,6 +339,19 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
           onAddTerminalContext={handleAddTerminalContext}
           terminalLabelsById={terminalLabelsById}
           terminalLaunchLocationsById={terminalLaunchLocationsById}
+          remoteTerminalsById={remoteTerminalsById}
+          newTerminalMachineMenu={
+            environments.some(
+              (environment) => environment.environmentId !== threadRef.environmentId,
+            ) ? (
+              <NewTerminalMachineMenu
+                threadEnvironmentId={threadRef.environmentId}
+                canOpenOnThreadEnvironment={canOperateTerminal}
+                onNewTerminal={createNewTerminal}
+                onSelectEnvironment={createRemoteTerminal}
+              />
+            ) : undefined
+          }
         />
       </div>
     </div>

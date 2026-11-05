@@ -109,6 +109,15 @@ describe("selectKnownTerminalSessions", () => {
     ).toBe("Renamed");
     expect(selectKnownTerminalSessions([other], environmentA, threadA)).toEqual([]);
     expect(selectKnownTerminalSessions([other], environmentA, threadB)).toBe(beforeB);
+
+    const openedElsewhere = summary(threadA, "terminal-3", {
+      originEnvironmentId: EnvironmentId.make("environment-b"),
+    });
+    expect(
+      selectKnownTerminalSessions([first, openedElsewhere], environmentA, threadA).map(
+        (session) => session.target.terminalId,
+      ),
+    ).toEqual(["terminal-1"]);
   });
 });
 

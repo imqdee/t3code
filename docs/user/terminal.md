@@ -17,6 +17,20 @@ then copy. Cmd+A on macOS and Ctrl+Shift+A elsewhere select the same output.
 Ctrl+A still moves to the beginning of shell input on Windows and Linux.
 Jump to latest in the context menu returns to the current output.
 
+## Terminals on other machines
+
+A thread's terminal drawer can also open terminals on your other connected
+environments. Click the arrow beside the drawer's New Terminal button and
+choose a machine. The button itself still opens a terminal on the thread's
+machine. The tab shows which machine it runs on, and a split from it opens
+on the same machine.
+
+The terminal starts in the thread's folder when that path exists on the other
+machine, and in that server's own folder otherwise. Its tab stays until you
+close it or its shell exits, even while that machine is offline. Closing the
+tab, or archiving or deleting the thread from this client, ends the terminal on
+the other machine, as soon as that machine is reachable again if it is offline.
+
 ## fish
 
 T3 Code starts fish with `no-query-term`, avoiding startup waits for terminal

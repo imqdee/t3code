@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   migratePersistedTerminalUiStateStoreState,
+  selectThreadRemoteTerminals,
   selectThreadTerminalUiState,
   useTerminalUiStateStore,
 } from "./terminalUiStateStore";
@@ -19,6 +20,8 @@ describe("terminalUiStateStore actions", () => {
     useTerminalUiStateStore.setState({
       terminalUiStateByThreadKey: {},
       suppressedTerminalIdsByThreadKey: {},
+      remoteTerminalsByThreadKey: {},
+      pendingRemoteCloses: [],
     });
   });
 
@@ -103,7 +106,34 @@ describe("terminalUiStateStore actions", () => {
           activeTerminalGroupId: "group-term-1",
         },
       },
+      remoteTerminalsByThreadKey: {},
+      pendingRemoteCloses: [],
     });
+  });
+
+  it("tracks a remote terminal only while the thread shows it", () => {
+    const store = useTerminalUiStateStore.getState();
+    const remote = { environmentId: "environment-b" as never, cwd: "/home/remote" };
+    const remoteTerminals = () =>
+      selectThreadRemoteTerminals(
+        useTerminalUiStateStore.getState().remoteTerminalsByThreadKey,
+        THREAD_REF,
+      );
+    store.setTerminalOpen(THREAD_REF, true);
+    store.newTerminal(THREAD_REF, "term-remote", remote);
+    store.splitTerminal(THREAD_REF, "term-split", remote);
+    store.newTerminal(THREAD_REF, "term-2");
+    expect(remoteTerminals()).toEqual({ "term-remote": remote, "term-split": remote });
+
+    store.closeTerminal(THREAD_REF, "term-split");
+    expect(remoteTerminals()).toEqual({ "term-remote": remote });
+
+    store.reconcileTerminalIds(THREAD_REF, [DEFAULT_THREAD_TERMINAL_ID, "term-2"]);
+    expect(remoteTerminals()).toEqual({});
+
+    store.newTerminal(THREAD_REF, "term-remote", remote);
+    store.clearTerminalUiState(THREAD_REF);
+    expect(useTerminalUiStateStore.getState().remoteTerminalsByThreadKey).toEqual({});
   });
 
   it("resets to default and clears persisted entry when closing the last terminal", () => {

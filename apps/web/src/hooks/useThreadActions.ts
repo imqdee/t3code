@@ -49,7 +49,8 @@ import { useDiffPanelStore } from "../diffPanelStore";
 import { usePreviewMiniPlayerStore } from "../previewMiniPlayerStore";
 import { clearThreadPreviewState } from "../previewStateStore";
 import { useRightPanelStore } from "../rightPanelStore";
-import { useTerminalUiStateStore } from "../terminalUiStateStore";
+import { selectThreadRemoteTerminals, useTerminalUiStateStore } from "../terminalUiStateStore";
+import { closeRemoteTerminalSession } from "../components/terminal/remoteTerminalClose";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
@@ -336,6 +337,23 @@ export function useThreadActions() {
     (store) => store.clearProjectDraftThreadById,
   );
   const clearTerminalUiState = useTerminalUiStateStore((state) => state.clearTerminalUiState);
+  // The thread's server closes its own terminals on archive and delete. Terminals this client
+  // opened for the thread on other machines never hear of it, so close them here.
+  const closeRemoteTerminals = (threadRef: ScopedThreadRef) => {
+    const remoteTerminals = selectThreadRemoteTerminals(
+      useTerminalUiStateStore.getState().remoteTerminalsByThreadKey,
+      threadRef,
+    );
+    for (const [terminalId, remote] of Object.entries(remoteTerminals)) {
+      void closeRemoteTerminalSession({
+        environmentId: remote.environmentId,
+        threadId: threadRef.threadId,
+        terminalId,
+      });
+      // A tab left behind would reopen the shell on that machine when the thread is viewed.
+      useTerminalUiStateStore.getState().closeTerminal(threadRef, terminalId);
+    }
+  };
   const markThreadVisited = useUiStateStore((state) => state.markThreadVisited);
   const router = useRouter();
   const handleNewThread = useNewThreadHandler();
@@ -406,6 +424,7 @@ export function useThreadActions() {
       return archiveResult;
     }
     expireThreadUndos(threadRef, LIST_PLACEMENT_UNDO_KINDS);
+    closeRemoteTerminals(threadRef);
     const wokeAt = threadWokeAt(thread, { now: new Date().toISOString() });
     if (wokeAt !== null) {
       markThreadVisited(scopedThreadKey(threadRef), wokeAt);
@@ -571,6 +590,7 @@ export function useThreadActions() {
       scopeProjectRef(threadRef.environmentId, thread.projectId),
       threadRef,
     );
+    closeRemoteTerminals(threadRef);
     clearTerminalUiState(threadRef);
     clearDeletedThreadPanelState(threadRef);
 

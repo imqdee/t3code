@@ -129,6 +129,14 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
     null;
   const hasReachedSplitLimit =
     (activeTerminalGroup?.terminalIds.length ?? 0) >= MAX_TERMINALS_PER_GROUP;
+  // A remote tab answers to its own environment's grant. Closing one never needs it: an
+  // unreachable machine must not leave a tab the user cannot remove.
+  const canSplitDrawerTerminal = (terminalId: string) =>
+    terminalActions.remoteTerminalFor(terminalId)
+      ? terminalActions.canWriteTerminal(terminalId)
+      : hasTerminalWriteAccess();
+  const canCloseDrawerTerminal = (terminalId: string) =>
+    terminalActions.remoteTerminalFor(terminalId) !== null || hasTerminalWriteAccess();
   /*__HOOK__*/
   const addTerminalContextToDraft = (selection: TerminalContextSelection) => {
     composerRef.current?.addTerminalContext(selection);
@@ -171,6 +179,22 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
   const toggleTerminalVisibilityStable = useStableCallback(toggleTerminalVisibility);
   const splitTerminal = (direction: "horizontal" | "vertical" = "horizontal") => {
     if (!activeThreadRef || hasReachedSplitLimit) return;
+    const remote = terminalActions.remoteTerminalFor(terminalUiState.activeTerminalId);
+    if (remote) {
+      void terminalActions
+        .launchRemoteTerminal({
+          environmentId: remote.environmentId,
+          cwd: remote.cwd,
+          place: (terminalId, placed) =>
+            direction === "vertical"
+              ? storeSplitTerminalVertical(activeThreadRef, terminalId, placed)
+              : storeSplitTerminal(activeThreadRef, terminalId, placed),
+        })
+        .then((launched) => {
+          if (launched) focusTerminal(activeThreadRef, launched.terminalId);
+        });
+      return;
+    }
     const launched = terminalActions.launchTerminal({
       place: (terminalId) =>
         direction === "vertical"
@@ -193,7 +217,7 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
   };
   const createNewTerminalStable = useStableCallback(createNewTerminal);
   const closeTerminal = (terminalId: string) => {
-    if (!hasTerminalWriteAccess() || !activeThreadRef) return;
+    if (!canCloseDrawerTerminal(terminalId) || !activeThreadRef) return;
     terminalActions.closeTerminalSession(terminalId, activeThreadRef);
     storeCloseTerminal(activeThreadRef, terminalId);
     focusActiveDrawerTerminal(activeThreadRef);
@@ -227,7 +251,7 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
             // worktree setup shell; the helper drops the panel-owned ones.
             drawerTerminalIds: [
               ...new Set([...terminalUiState.terminalIds, ...activeServerOrderedTerminalIds]),
-            ],
+            ].filter((terminalId) => terminalActions.remoteTerminalFor(terminalId) === null),
             activeTerminalId: terminalUiState.activeTerminalId,
             panelTerminalIds,
             runningTerminalIds,
@@ -378,12 +402,10 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
   };
   const closePanelTerminalStable = useStableCallback(closePanelTerminal);
   const requestCloseTerminal = (terminalId: string) => {
-    if (!hasTerminalWriteAccess()) return;
+    if (!canCloseDrawerTerminal(terminalId)) return;
     const label = activeTerminalLabelsById.get(terminalId) ?? getTerminalLabel(terminalId);
     void confirmTerminalClose([label]).then((confirmed) => {
-      if (confirmed && readEnvironmentScope(environmentId, AuthTerminalOperateScope)) {
-        closeTerminal(terminalId);
-      }
+      if (confirmed) closeTerminal(terminalId);
     });
   };
   const requestCloseTerminalStable = useStableCallback(requestCloseTerminal);
@@ -412,23 +434,30 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
       toggleTerminalVisibility();
     },
     "terminal.split": ({ terminalFocusOwner }) => {
-      if (!hasTerminalWriteAccess()) return false;
-      if (terminalFocusOwner === "right-panel") return void splitPanelTerminal();
+      if (terminalFocusOwner === "right-panel") {
+        if (!hasTerminalWriteAccess()) return false;
+        return void splitPanelTerminal();
+      }
+      if (!canSplitDrawerTerminal(terminalUiState.activeTerminalId)) return false;
       openTerminalIfClosed();
       splitTerminal();
     },
     "terminal.splitVertical": ({ terminalFocusOwner }) => {
-      if (!hasTerminalWriteAccess()) return false;
-      if (terminalFocusOwner === "right-panel") return void splitPanelTerminal("vertical");
+      if (terminalFocusOwner === "right-panel") {
+        if (!hasTerminalWriteAccess()) return false;
+        return void splitPanelTerminal("vertical");
+      }
+      if (!canSplitDrawerTerminal(terminalUiState.activeTerminalId)) return false;
       openTerminalIfClosed();
       splitTerminal("vertical");
     },
     "terminal.close": ({ terminalFocusOwner }) => {
-      if (!hasTerminalWriteAccess()) return false;
       if (terminalFocusOwner === "right-panel" && activeRightPanelSurface?.kind === "terminal") {
+        if (!hasTerminalWriteAccess()) return false;
         requestClosePanelTerminal(activeRightPanelSurface.activeTerminalId);
         return;
       }
+      if (!canCloseDrawerTerminal(terminalUiState.activeTerminalId)) return false;
       if (terminalUiState.terminalOpen) requestCloseTerminal(terminalUiState.activeTerminalId);
     },
     "terminal.new": ({ terminalFocusOwner }) => {

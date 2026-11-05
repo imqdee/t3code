@@ -26,6 +26,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthTerminalOperateScope,
   type ContextMenuItem,
+  type EnvironmentId,
   type ProviderInstanceId,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
@@ -91,7 +92,7 @@ import { serverEnvironment } from "../state/server";
 import { previewEnvironment } from "../state/preview";
 import { readEnvironmentScope } from "../state/session";
 import { terminalEnvironment } from "../state/terminal";
-import { useEnvironmentScope } from "../state/session";
+import { useEnvironmentScope, useEnvironmentsWithScope } from "../state/session";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
 import { useAtomCommand } from "../state/use-atom-command";
 import { preventTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
@@ -472,6 +473,8 @@ export function shouldHandleTerminalExit(
 interface TerminalViewportProps {
   advancedTypography: boolean;
   threadRef: ScopedThreadRef;
+  /** Set for a terminal that runs on another environment than the thread's. */
+  remoteEnvironmentId?: EnvironmentId;
   threadId: ThreadId;
   terminalId: string;
   terminalLabel: string;
@@ -495,7 +498,7 @@ interface TerminalLaunchLocation {
 
 export function TerminalViewport(props: TerminalViewportProps) {
   const sessionKey = JSON.stringify([
-    props.threadRef.environmentId,
+    props.remoteEnvironmentId ?? props.threadRef.environmentId,
     props.threadId,
     props.terminalId,
     props.cwd,
@@ -508,6 +511,7 @@ export function TerminalViewport(props: TerminalViewportProps) {
 function TerminalSessionViewport({
   advancedTypography,
   threadRef,
+  remoteEnvironmentId,
   threadId,
   terminalId,
   terminalLabel,
@@ -525,7 +529,7 @@ function TerminalSessionViewport({
   const autoFocusedRef = useRef(false);
   const terminalRef = useRef<GhosttyTerminalSurface | null>(null);
   const visibleRef = useRef(visible);
-  const environmentId = threadRef.environmentId;
+  const environmentId = remoteEnvironmentId ?? threadRef.environmentId;
   const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
   const hasTerminalWriteAccess = useEffectEvent(() =>
     readEnvironmentScope(environmentId, AuthTerminalOperateScope),
@@ -620,6 +624,7 @@ function TerminalSessionViewport({
     ...(worktreePath !== undefined ? { worktreePath } : {}),
     ...(runtimeEnv ? { env: runtimeEnv } : {}),
     ...(providerInstanceId ? { providerInstanceId } : {}),
+    ...(remoteEnvironmentId ? { originEnvironmentId: threadRef.environmentId } : {}),
   });
   // Attaching starts with the viewport, while the WASM surface is still loading;
   // the surface reads the session itself, so output chunks never re-render here.
@@ -667,7 +672,14 @@ function TerminalSessionViewport({
   );
   const openLinkInPreview = useEffectEvent(
     (url: string, forceBrowser: boolean, fallbackToBrowser: () => void) =>
-      openTerminalLinkInPreview({ url, threadRef, openPreview, fallbackToBrowser, forceBrowser }),
+      openTerminalLinkInPreview({
+        url,
+        threadRef,
+        openPreview,
+        fallbackToBrowser,
+        // The thread's preview runs on the thread's machine, not the one that printed the URL.
+        forceBrowser: forceBrowser || remoteEnvironmentId !== undefined,
+      }),
   );
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- sets the terminal input's readOnly from the operate grant and consumes a pending focus request
@@ -1251,7 +1263,18 @@ interface ThreadTerminalDrawerProps {
   keybindings: ResolvedKeybindingsConfig;
   terminalLabelsById?: ReadonlyMap<string, string>;
   terminalLaunchLocationsById?: ReadonlyMap<string, TerminalLaunchLocation>;
+  /** Terminals of this thread that run on another environment. */
+  remoteTerminalsById?: ReadonlyMap<string, RemoteTerminalPresentation>;
+  /** The chevron half of the new terminal button, shown when another environment exists. */
+  newTerminalMachineMenu?: ReactNode;
 }
+
+export interface RemoteTerminalPresentation {
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+}
+
+const NO_REMOTE_TERMINALS: ReadonlyMap<string, RemoteTerminalPresentation> = new Map();
 
 interface TerminalActionButtonProps {
   label: string;
@@ -1308,6 +1331,7 @@ function TerminalSplitPanes({
   advancedTypography,
   threadRef,
   threadId,
+  remoteTerminalsById,
   onAddTerminalContext,
   visible,
   keybindings,
@@ -1322,6 +1346,7 @@ function TerminalSplitPanes({
   advancedTypography: boolean;
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
+  remoteTerminalsById: ReadonlyMap<string, RemoteTerminalPresentation>;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
   visible: boolean;
   keybindings: ResolvedKeybindingsConfig;
@@ -1341,6 +1366,7 @@ function TerminalSplitPanes({
     >
       {terminalIds.map((terminalId) => {
         const terminalLaunchLocation = resolveLaunchLocation(terminalId);
+        const remote = remoteTerminalsById.get(terminalId);
         return (
           <div
             key={terminalId}
@@ -1359,6 +1385,7 @@ function TerminalSplitPanes({
               <TerminalViewport
                 advancedTypography={advancedTypography}
                 threadRef={threadRef}
+                {...(remote ? { remoteEnvironmentId: remote.environmentId } : {})}
                 threadId={threadId}
                 terminalId={terminalId}
                 terminalLabel={terminalLabelById.get(terminalId) ?? "Terminal"}
@@ -1388,7 +1415,8 @@ function TerminalSidebarGroup({
   showHeader,
   terminalLabelById,
   closeShortcutLabel,
-  canOperateTerminal,
+  canCloseTerminal,
+  remoteTerminalsById,
   onActiveTerminalChange,
   onCloseTerminal,
 }: {
@@ -1397,7 +1425,8 @@ function TerminalSidebarGroup({
   showHeader: boolean;
   terminalLabelById: ReadonlyMap<string, string>;
   closeShortcutLabel: string | undefined;
-  canOperateTerminal: boolean;
+  canCloseTerminal: (terminalId: string) => boolean;
+  remoteTerminalsById: ReadonlyMap<string, RemoteTerminalPresentation>;
   onActiveTerminalChange: (terminalId: string) => void;
   onCloseTerminal: (terminalId: string) => void;
 }) {
@@ -1443,6 +1472,7 @@ function TerminalSidebarGroup({
           const closeTerminalLabel = `Close ${terminalLabel}${
             isActive && closeShortcutLabel ? ` (${closeShortcutLabel})` : ""
           }`;
+          const environmentLabel = remoteTerminalsById.get(terminalId)?.environmentLabel;
           return (
             <div
               key={terminalId}
@@ -1453,7 +1483,7 @@ function TerminalSidebarGroup({
                   : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
               )}
             >
-              {canOperateTerminal ? (
+              {canCloseTerminal(terminalId) ? (
                 <PanelTabCloseButton
                   label={closeTerminalLabel}
                   onClick={() => onCloseTerminal(terminalId)}
@@ -1470,6 +1500,11 @@ function TerminalSidebarGroup({
                 onClick={() => onActiveTerminalChange(terminalId)}
               >
                 <span className="truncate">{terminalLabel}</span>
+                {environmentLabel ? (
+                  <span className="ml-auto max-w-1/2 shrink-0 truncate text-muted-foreground/70 text-3xs">
+                    {environmentLabel}
+                  </span>
+                ) : null}
               </button>
             </div>
           );
@@ -1507,8 +1542,21 @@ export default function ThreadTerminalDrawer({
   keybindings,
   terminalLabelsById,
   terminalLaunchLocationsById,
+  remoteTerminalsById = NO_REMOTE_TERMINALS,
+  newTerminalMachineMenu,
 }: ThreadTerminalDrawerProps) {
   const canOperateTerminal = useEnvironmentScope(threadRef.environmentId, AuthTerminalOperateScope);
+  const operableRemoteEnvironmentIds = useEnvironmentsWithScope(
+    [...remoteTerminalsById.values()],
+    AuthTerminalOperateScope,
+  );
+  const canOperate = (terminalId: string) => {
+    const remote = remoteTerminalsById.get(terminalId);
+    return remote ? operableRemoteEnvironmentIds.has(remote.environmentId) : canOperateTerminal;
+  };
+  // An unreachable machine must not leave a tab the user cannot remove.
+  const canCloseTerminal = (terminalId: string) =>
+    remoteTerminalsById.has(terminalId) || canOperateTerminal;
   const terminalArea = workspaceAreaProps("terminal", 5, "Terminal");
   const isPanel = mode === "panel";
   const [advancedTypography] = useLocalStorage(
@@ -1676,12 +1724,14 @@ export default function ThreadTerminalDrawer({
   const closeTerminalActionLabel = closeShortcutLabel
     ? `Close Terminal (${closeShortcutLabel})`
     : "Close Terminal";
+  const canSplitActiveTerminal = canOperate(resolvedActiveTerminalId);
+  const canCloseActiveTerminal = canCloseTerminal(resolvedActiveTerminalId);
   const onSplitTerminalAction = () => {
-    if (!canOperateTerminal || hasReachedSplitLimit) return;
+    if (!canSplitActiveTerminal || hasReachedSplitLimit) return;
     onSplitTerminal();
   };
   const onSplitTerminalVerticalAction = () => {
-    if (!canOperateTerminal || hasReachedSplitLimit) return;
+    if (!canSplitActiveTerminal || hasReachedSplitLimit) return;
     onSplitTerminalVertical();
   };
   const onNewTerminalAction = () => {
@@ -1689,10 +1739,14 @@ export default function ThreadTerminalDrawer({
     onNewTerminal();
   };
   const confirmCloseTerminal = (terminalId: string) => {
-    if (!canOperateTerminal) return;
+    if (!canCloseTerminal(terminalId)) return;
+    const isRemote = remoteTerminalsById.has(terminalId);
     const label = terminalLabelById.get(terminalId) ?? getTerminalLabel(terminalId);
     void confirmTerminalClose([label]).then((confirmed) => {
-      if (confirmed && readEnvironmentScope(threadRef.environmentId, AuthTerminalOperateScope)) {
+      if (
+        confirmed &&
+        (isRemote || readEnvironmentScope(threadRef.environmentId, AuthTerminalOperateScope))
+      ) {
         onCloseTerminal(terminalId, threadRef);
       }
     });
@@ -1815,14 +1869,17 @@ export default function ThreadTerminalDrawer({
         ) : null}
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 py-6 text-center text-sm text-muted-foreground">
           <p>No terminal sessions for this thread yet.</p>
-          <Button
-            size="xs"
-            variant="outline"
-            onClick={onNewTerminalAction}
-            disabled={!canOperateTerminal}
-          >
-            {newTerminalActionLabel}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={onNewTerminalAction}
+              disabled={!canOperateTerminal}
+            >
+              {newTerminalActionLabel}
+            </Button>
+            {newTerminalMachineMenu}
+          </div>
         </div>
       </aside>
     );
@@ -1855,7 +1912,7 @@ export default function ThreadTerminalDrawer({
         <div className="pointer-events-none absolute right-2 top-2 z-20">
           <div className="pointer-events-auto inline-flex items-center overflow-hidden rounded-md border border-border/80 bg-background shadow-xs">
             <TerminalActionButton
-              disabled={!canOperateTerminal}
+              disabled={!canSplitActiveTerminal}
               className={`p-1 text-foreground/90 transition-colors ${
                 hasReachedSplitLimit
                   ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1868,7 +1925,7 @@ export default function ThreadTerminalDrawer({
             </TerminalActionButton>
             <div className="h-4 w-px bg-border/80" />
             <TerminalActionButton
-              disabled={!canOperateTerminal}
+              disabled={!canSplitActiveTerminal}
               className={`p-1 text-foreground/90 transition-colors ${
                 hasReachedSplitLimit
                   ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1880,17 +1937,20 @@ export default function ThreadTerminalDrawer({
               <SquareSplitVertical className="size-3.25" />
             </TerminalActionButton>
             <div className="h-4 w-px bg-border/80" />
-            <TerminalActionButton
-              disabled={!canOperateTerminal}
-              className="p-1 text-foreground/90 transition-colors hover:bg-accent"
-              onClick={onNewTerminalAction}
-              label={newTerminalActionLabel}
-            >
-              <Plus className="size-3.25" />
-            </TerminalActionButton>
+            <div className="inline-flex h-full items-center">
+              <TerminalActionButton
+                disabled={!canOperateTerminal}
+                className="p-1 text-foreground/90 transition-colors hover:bg-accent"
+                onClick={onNewTerminalAction}
+                label={newTerminalActionLabel}
+              >
+                <Plus className="size-3.25" />
+              </TerminalActionButton>
+              {newTerminalMachineMenu}
+            </div>
             <div className="h-4 w-px bg-border/80" />
             <TerminalActionButton
-              disabled={!canOperateTerminal}
+              disabled={!canCloseActiveTerminal}
               className="p-1 text-foreground/90 transition-colors hover:bg-accent"
               onClick={() => confirmCloseTerminal(resolvedActiveTerminalId)}
               label={closeTerminalActionLabel}
@@ -1920,6 +1980,7 @@ export default function ThreadTerminalDrawer({
               advancedTypography={advancedTypography}
               threadRef={threadRef}
               threadId={threadId}
+              remoteTerminalsById={remoteTerminalsById}
               onAddTerminalContext={onAddTerminalContext}
               visible={visible}
               keybindings={keybindings}
@@ -1931,7 +1992,7 @@ export default function ThreadTerminalDrawer({
               <div className="flex h-[22px] items-stretch justify-end border-b border-border/70">
                 <div className="inline-flex h-full items-stretch">
                   <TerminalActionButton
-                    disabled={!canOperateTerminal}
+                    disabled={!canSplitActiveTerminal}
                     className={`inline-flex h-full items-center px-1 text-foreground/90 transition-colors ${
                       hasReachedSplitLimit
                         ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1943,7 +2004,7 @@ export default function ThreadTerminalDrawer({
                     <SquareSplitHorizontal className="size-3.25" />
                   </TerminalActionButton>
                   <TerminalActionButton
-                    disabled={!canOperateTerminal}
+                    disabled={!canSplitActiveTerminal}
                     className={`inline-flex h-full items-center border-l border-border/70 px-1 text-foreground/90 transition-colors ${
                       hasReachedSplitLimit
                         ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1962,8 +2023,9 @@ export default function ThreadTerminalDrawer({
                   >
                     <Plus className="size-3.25" />
                   </TerminalActionButton>
+                  {newTerminalMachineMenu}
                   <TerminalActionButton
-                    disabled={!canOperateTerminal}
+                    disabled={!canCloseActiveTerminal}
                     className="inline-flex h-full items-center border-l border-border/70 px-1 text-foreground/90 transition-colors hover:bg-accent/70"
                     onClick={() => confirmCloseTerminal(resolvedActiveTerminalId)}
                     label={closeTerminalActionLabel}
@@ -1982,7 +2044,8 @@ export default function ThreadTerminalDrawer({
                     showHeader={showGroupHeaders}
                     terminalLabelById={terminalLabelById}
                     closeShortcutLabel={closeShortcutLabel}
-                    canOperateTerminal={canOperateTerminal}
+                    canCloseTerminal={canCloseTerminal}
+                    remoteTerminalsById={remoteTerminalsById}
                     onActiveTerminalChange={onActiveTerminalChange}
                     onCloseTerminal={confirmCloseTerminal}
                   />

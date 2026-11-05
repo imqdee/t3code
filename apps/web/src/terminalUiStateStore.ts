@@ -1,5 +1,5 @@
 import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { type ScopedThreadRef } from "@t3tools/contracts";
+import { type EnvironmentId, type ScopedThreadRef } from "@t3tools/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { resolveStorage } from "./lib/storage";
@@ -19,11 +19,35 @@ interface ThreadTerminalUiState {
   activeTerminalGroupId: string;
 }
 
+/** A terminal of this thread that runs on another environment than the thread's. */
+export interface RemoteTerminal {
+  readonly environmentId: EnvironmentId;
+  readonly cwd: string;
+}
+
+export type ThreadRemoteTerminals = Readonly<Record<string, RemoteTerminal>>;
+
+/** A remote session whose close has not reached its environment yet. */
+export interface PendingRemoteClose {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: string;
+  readonly terminalId: string;
+}
+
+const isSameRemoteClose = (left: PendingRemoteClose, right: PendingRemoteClose) =>
+  left.environmentId === right.environmentId &&
+  left.threadId === right.threadId &&
+  left.terminalId === right.terminalId;
+
+const EMPTY_REMOTE_TERMINALS: ThreadRemoteTerminals = Object.freeze({});
+
 const TERMINAL_UI_STATE_STORAGE_KEY = "t3code:terminal-state:v1";
 
 interface PersistedTerminalUiStateStoreState {
   terminalUiStateByThreadKey?: Record<string, ThreadTerminalUiState>;
   terminalStateByThreadKey?: Record<string, ThreadTerminalUiState>;
+  remoteTerminalsByThreadKey?: Record<string, ThreadRemoteTerminals>;
+  pendingRemoteCloses?: PendingRemoteClose[];
 }
 
 export function migratePersistedTerminalUiStateStoreState(
@@ -43,7 +67,17 @@ export function migratePersistedTerminalUiStateStoreState(
     ),
   );
 
-  return { terminalUiStateByThreadKey };
+  const remoteTerminalsByThreadKey = Object.fromEntries(
+    Object.entries(candidate.remoteTerminalsByThreadKey ?? {}).filter(([threadKey]) =>
+      parseScopedThreadKey(threadKey),
+    ),
+  );
+
+  return {
+    terminalUiStateByThreadKey,
+    remoteTerminalsByThreadKey,
+    pendingRemoteCloses: candidate.pendingRemoteCloses ?? [],
+  };
 }
 
 function createTerminalUiStateStorage() {
@@ -517,6 +551,35 @@ function updateTerminalUiStateByThreadKey(
   };
 }
 
+export function selectThreadRemoteTerminals(
+  remoteTerminalsByThreadKey: Record<string, ThreadRemoteTerminals>,
+  threadRef: ScopedThreadRef | null | undefined,
+): ThreadRemoteTerminals {
+  if (!threadRef || threadRef.threadId.length === 0) return EMPTY_REMOTE_TERMINALS;
+  return remoteTerminalsByThreadKey[terminalThreadKey(threadRef)] ?? EMPTY_REMOTE_TERMINALS;
+}
+
+/** Keeps only entries for terminals the thread still shows, plus the one being added. */
+function updateThreadRemoteTerminals(
+  remoteTerminalsByThreadKey: Record<string, ThreadRemoteTerminals>,
+  threadKey: string,
+  terminalIds: readonly string[],
+  added?: { readonly terminalId: string; readonly remote: RemoteTerminal },
+): Record<string, ThreadRemoteTerminals> {
+  const current = remoteTerminalsByThreadKey[threadKey] ?? EMPTY_REMOTE_TERMINALS;
+  const shown = new Set(terminalIds);
+  const entries = Object.entries(current).filter(([terminalId]) => shown.has(terminalId));
+  if (added && shown.has(added.terminalId)) {
+    const index = entries.findIndex(([terminalId]) => terminalId === added.terminalId);
+    if (index >= 0) entries.splice(index, 1);
+    entries.push([added.terminalId, added.remote]);
+  } else if (entries.length === Object.keys(current).length) {
+    return remoteTerminalsByThreadKey;
+  }
+  if (entries.length === 0) return removeRecordEntry(remoteTerminalsByThreadKey, threadKey);
+  return { ...remoteTerminalsByThreadKey, [threadKey]: Object.fromEntries(entries) };
+}
+
 function updateSuppressedTerminalId(
   suppressedTerminalIdsByThreadKey: Record<string, string[]>,
   threadRef: ScopedThreadRef,
@@ -561,11 +624,19 @@ function removeRecordEntry<T>(record: Record<string, T>, key: string): Record<st
 interface TerminalUiStateStoreState {
   terminalUiStateByThreadKey: Record<string, ThreadTerminalUiState>;
   suppressedTerminalIdsByThreadKey: Record<string, string[]>;
+  remoteTerminalsByThreadKey: Record<string, ThreadRemoteTerminals>;
+  pendingRemoteCloses: PendingRemoteClose[];
+  queueRemoteClose: (target: PendingRemoteClose) => void;
+  forgetRemoteClose: (target: PendingRemoteClose) => void;
   setTerminalOpen: (threadRef: ScopedThreadRef, open: boolean) => void;
   setTerminalHeight: (threadRef: ScopedThreadRef, height: number) => void;
-  splitTerminal: (threadRef: ScopedThreadRef, terminalId: string) => void;
-  splitTerminalVertical: (threadRef: ScopedThreadRef, terminalId: string) => void;
-  newTerminal: (threadRef: ScopedThreadRef, terminalId: string) => void;
+  splitTerminal: (threadRef: ScopedThreadRef, terminalId: string, remote?: RemoteTerminal) => void;
+  splitTerminalVertical: (
+    threadRef: ScopedThreadRef,
+    terminalId: string,
+    remote?: RemoteTerminal,
+  ) => void;
+  newTerminal: (threadRef: ScopedThreadRef, terminalId: string, remote?: RemoteTerminal) => void;
   ensureTerminal: (
     threadRef: ScopedThreadRef,
     terminalId: string,
@@ -589,6 +660,7 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
           suppressedTerminalIds: readonly string[],
         ) => ThreadTerminalUiState,
         suppression?: { terminalId: string; suppressed: boolean },
+        remote?: RemoteTerminal,
       ) => {
         set((state) => {
           const threadKey = terminalThreadKey(threadRef);
@@ -597,6 +669,12 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
             state.terminalUiStateByThreadKey,
             threadRef,
             (terminalState) => updater(terminalState, suppressedTerminalIds),
+          );
+          const nextRemoteTerminalsByThreadKey = updateThreadRemoteTerminals(
+            state.remoteTerminalsByThreadKey,
+            threadKey,
+            selectThreadTerminalUiState(nextTerminalUiStateByThreadKey, threadRef).terminalIds,
+            remote && suppression ? { terminalId: suppression.terminalId, remote } : undefined,
           );
           const nextSuppressedTerminalIdsByThreadKey = suppression
             ? updateSuppressedTerminalId(
@@ -608,13 +686,15 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
             : state.suppressedTerminalIdsByThreadKey;
           if (
             nextTerminalUiStateByThreadKey === state.terminalUiStateByThreadKey &&
-            nextSuppressedTerminalIdsByThreadKey === state.suppressedTerminalIdsByThreadKey
+            nextSuppressedTerminalIdsByThreadKey === state.suppressedTerminalIdsByThreadKey &&
+            nextRemoteTerminalsByThreadKey === state.remoteTerminalsByThreadKey
           ) {
             return state;
           }
           return {
             terminalUiStateByThreadKey: nextTerminalUiStateByThreadKey,
             suppressedTerminalIdsByThreadKey: nextSuppressedTerminalIdsByThreadKey,
+            remoteTerminalsByThreadKey: nextRemoteTerminalsByThreadKey,
           };
         });
       };
@@ -622,6 +702,24 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
       return {
         terminalUiStateByThreadKey: {},
         suppressedTerminalIdsByThreadKey: {},
+        remoteTerminalsByThreadKey: {},
+        pendingRemoteCloses: [],
+        queueRemoteClose: (target) =>
+          set((state) =>
+            state.pendingRemoteCloses.some((entry) => isSameRemoteClose(entry, target))
+              ? state
+              : { pendingRemoteCloses: [...state.pendingRemoteCloses, target] },
+          ),
+        forgetRemoteClose: (target) =>
+          set((state) =>
+            state.pendingRemoteCloses.some((entry) => isSameRemoteClose(entry, target))
+              ? {
+                  pendingRemoteCloses: state.pendingRemoteCloses.filter(
+                    (entry) => !isSameRemoteClose(entry, target),
+                  ),
+                }
+              : state,
+          ),
         setTerminalOpen: (threadRef, open) => {
           const terminalState = selectThreadTerminalUiState(
             get().terminalUiStateByThreadKey,
@@ -637,21 +735,27 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
         },
         setTerminalHeight: (threadRef, height) =>
           updateTerminal(threadRef, (state) => setThreadTerminalHeight(state, height)),
-        splitTerminal: (threadRef, terminalId) =>
-          updateTerminal(threadRef, (state) => splitThreadTerminal(state, terminalId), {
-            terminalId,
-            suppressed: false,
-          }),
-        splitTerminalVertical: (threadRef, terminalId) =>
-          updateTerminal(threadRef, (state) => splitThreadTerminal(state, terminalId, "vertical"), {
-            terminalId,
-            suppressed: false,
-          }),
-        newTerminal: (threadRef, terminalId) =>
-          updateTerminal(threadRef, (state) => newThreadTerminal(state, terminalId), {
-            terminalId,
-            suppressed: false,
-          }),
+        splitTerminal: (threadRef, terminalId, remote) =>
+          updateTerminal(
+            threadRef,
+            (state) => splitThreadTerminal(state, terminalId),
+            { terminalId, suppressed: false },
+            remote,
+          ),
+        splitTerminalVertical: (threadRef, terminalId, remote) =>
+          updateTerminal(
+            threadRef,
+            (state) => splitThreadTerminal(state, terminalId, "vertical"),
+            { terminalId, suppressed: false },
+            remote,
+          ),
+        newTerminal: (threadRef, terminalId, remote) =>
+          updateTerminal(
+            threadRef,
+            (state) => newThreadTerminal(state, terminalId),
+            { terminalId, suppressed: false },
+            remote,
+          ),
         ensureTerminal: (threadRef, terminalId, options) =>
           updateTerminal(
             threadRef,
@@ -705,9 +809,11 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
             );
             const hadSuppressedTerminalIds =
               state.suppressedTerminalIdsByThreadKey[threadKey] !== undefined;
+            const hadRemoteTerminals = state.remoteTerminalsByThreadKey[threadKey] !== undefined;
             if (
               nextTerminalUiStateByThreadKey === state.terminalUiStateByThreadKey &&
-              !hadSuppressedTerminalIds
+              !hadSuppressedTerminalIds &&
+              !hadRemoteTerminals
             ) {
               return state;
             }
@@ -715,6 +821,10 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
               terminalUiStateByThreadKey: nextTerminalUiStateByThreadKey,
               suppressedTerminalIdsByThreadKey: removeRecordEntry(
                 state.suppressedTerminalIdsByThreadKey,
+                threadKey,
+              ),
+              remoteTerminalsByThreadKey: removeRecordEntry(
+                state.remoteTerminalsByThreadKey,
                 threadKey,
               ),
             };
@@ -725,7 +835,8 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
             const hadTerminalUiState = state.terminalUiStateByThreadKey[threadKey] !== undefined;
             const hadSuppressedTerminalIds =
               state.suppressedTerminalIdsByThreadKey[threadKey] !== undefined;
-            if (!hadTerminalUiState && !hadSuppressedTerminalIds) {
+            const hadRemoteTerminals = state.remoteTerminalsByThreadKey[threadKey] !== undefined;
+            if (!hadTerminalUiState && !hadSuppressedTerminalIds && !hadRemoteTerminals) {
               return state;
             }
             return {
@@ -737,6 +848,10 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
                 state.suppressedTerminalIdsByThreadKey,
                 threadKey,
               ),
+              remoteTerminalsByThreadKey: removeRecordEntry(
+                state.remoteTerminalsByThreadKey,
+                threadKey,
+              ),
             };
           }),
         removeOrphanedTerminalUiStates: (activeThreadKeys) =>
@@ -745,6 +860,7 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
               [
                 ...Object.keys(state.terminalUiStateByThreadKey),
                 ...Object.keys(state.suppressedTerminalIdsByThreadKey),
+                ...Object.keys(state.remoteTerminalsByThreadKey),
               ].filter((key) => !activeThreadKeys.has(key)),
             );
             if (orphanedIds.size === 0) {
@@ -754,13 +870,16 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
             const nextSuppressedTerminalIdsByThreadKey = {
               ...state.suppressedTerminalIdsByThreadKey,
             };
+            const nextRemoteTerminalsByThreadKey = { ...state.remoteTerminalsByThreadKey };
             for (const id of orphanedIds) {
               delete nextTerminalUiStateByThreadKey[id];
               delete nextSuppressedTerminalIdsByThreadKey[id];
+              delete nextRemoteTerminalsByThreadKey[id];
             }
             return {
               terminalUiStateByThreadKey: nextTerminalUiStateByThreadKey,
               suppressedTerminalIdsByThreadKey: nextSuppressedTerminalIdsByThreadKey,
+              remoteTerminalsByThreadKey: nextRemoteTerminalsByThreadKey,
             };
           }),
       };
@@ -772,6 +891,8 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
       migrate: migratePersistedTerminalUiStateStoreState,
       partialize: (state) => ({
         terminalUiStateByThreadKey: state.terminalUiStateByThreadKey,
+        remoteTerminalsByThreadKey: state.remoteTerminalsByThreadKey,
+        pendingRemoteCloses: state.pendingRemoteCloses,
       }),
     },
   ),

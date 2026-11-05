@@ -98,7 +98,11 @@ export function selectKnownTerminalSessions(
   let views = index.views.get(environmentId);
   const cached = views?.get(threadId);
   if (cached) return cached;
-  const summaries = threadId === null ? index.all : index.byThreadId.get(threadId);
+  // A terminal another environment opened under the same thread id belongs to that thread.
+  const summaries = (threadId === null ? index.all : index.byThreadId.get(threadId))?.filter(
+    (summary) =>
+      summary.originEnvironmentId === undefined || summary.originEnvironmentId === environmentId,
+  );
   if (!summaries || summaries.length === 0) return EMPTY_KNOWN_TERMINAL_SESSIONS;
 
   const anchor = summaries[0]!;
