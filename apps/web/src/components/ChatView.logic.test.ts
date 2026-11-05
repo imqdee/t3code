@@ -9,6 +9,8 @@ import {
   deriveAvailableRevertTurnCounts,
 } from "./ChatView.logic";
 import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
+import { restoreComposerDraft } from "./chat/chatViewSend";
+import { useComposerDraftStore } from "../composerDraftStore";
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { deriveProviderInstanceEntries } from "../providerInstances";
 import { ensureInlineContextReferences } from "../lib/composerContextReferences";
@@ -1061,6 +1063,36 @@ describe("snapshotComposerSend", () => {
     expect(snapshot.messageText).toBe(
       ensureInlineContextReferences("run", [terminalContextReference(live)]).trim(),
     );
+  });
+
+  it("restores a failed send ahead of a draft typed since", () => {
+    const draftTarget = { environmentId, threadId };
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(draftTarget, "typed while uploading");
+    store.setTerminalContexts(draftTarget, [expired, live]);
+    const snapshot = snapshotComposerSend({
+      prompt: "failed send",
+      images: [],
+      files: [],
+      terminalContexts: [live],
+      sendableTerminalContexts: [live],
+      previewAnnotations: [],
+      reviewComments: [],
+      threadContexts: [],
+      environmentContexts: [],
+    });
+
+    const typed = useComposerDraftStore.getState().getComposerDraft(draftTarget)?.prompt;
+
+    restoreComposerDraft(draftTarget, snapshot);
+
+    const draft = useComposerDraftStore.getState().getComposerDraft(draftTarget);
+    expect(draft?.prompt.startsWith(`failed send`)).toBe(true);
+    expect(draft?.prompt).toContain(`\n\n${typed}`);
+    expect(draft?.terminalContexts.map((context) => context.id)).toEqual([
+      "ctx-live",
+      "ctx-expired",
+    ]);
   });
 });
 

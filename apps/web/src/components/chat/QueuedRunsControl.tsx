@@ -27,6 +27,7 @@ import * as DateTime from "effect/DateTime";
 import { useId, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
 
 import { useAssetUrls } from "../../assets/assetUrls";
+import { usePendingAttachmentUploadProgress } from "../../lib/attachmentUploadQueue";
 import { threadEnvironment } from "../../state/threads";
 import { useQuietThreadShell, useThreadProjection } from "../../state/entities";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -70,6 +71,16 @@ function queuedImageResources(projection: ThreadQueueProjection | undefined) {
         ? [{ _tag: "attachment" as const, attachmentId: attachment.id }]
         : [],
     ),
+  );
+}
+
+function PendingQueuedLabel(props: { readonly attachmentIds: ReadonlyArray<string> }) {
+  const uploadProgress = usePendingAttachmentUploadProgress(props.attachmentIds);
+  return (
+    <span className="flex items-center gap-1 px-1 tabular-nums">
+      <Clock3Icon aria-hidden className="size-3" />
+      {uploadProgress === null ? "Saving" : `Uploading ${uploadProgress}`}
+    </span>
   );
 }
 
@@ -141,6 +152,7 @@ export function QueuedRunsControl({
           name: attachment.name,
           url: queuedImageUrlById.get(attachment.id) ?? null,
         })),
+      localAttachmentIds: [] as ReadonlyArray<string>,
       pending: false,
     })),
     ...optimisticQueued.map((message) => ({
@@ -152,6 +164,7 @@ export function QueuedRunsControl({
       text: message.text,
       editable: true,
       attachments: [] as ReadonlyArray<ContractChatAttachment>,
+      localAttachmentIds: (message.attachments ?? []).map((attachment) => attachment.id),
       thumbnails: (message.attachments ?? [])
         .filter(isImageAttachment)
         .map<QueuedRowThumbnail>((attachment) => ({
@@ -291,10 +304,7 @@ export function QueuedRunsControl({
                   </>
                 ) : null}
                 {item.pending ? (
-                  <span className="flex items-center gap-1 px-1">
-                    <Clock3Icon aria-hidden className="size-3" />
-                    Saving
-                  </span>
+                  <PendingQueuedLabel attachmentIds={item.localAttachmentIds} />
                 ) : null}
                 {isEditing ? (
                   <>

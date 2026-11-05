@@ -28,7 +28,12 @@ import { environmentCatalog } from "../connection/catalog";
 import { assetEnvironment } from "../state/assets";
 import { attachmentEnvironment } from "../state/attachments";
 import { readEnvironmentScope, readPreparedConnection } from "../state/session";
-import type { AttachmentUploadState, ReadyAttachmentUpload } from "./attachmentUploadState";
+import {
+  formatAttachmentUploadProgress,
+  pendingAttachmentUploadProgress,
+  type AttachmentUploadState,
+  type ReadyAttachmentUpload,
+} from "./attachmentUploadState";
 
 const MAX_UPLOADS_PER_ENVIRONMENT = 3;
 const UPLOAD_TIMEOUT_MS = 5 * 60_000;
@@ -77,6 +82,16 @@ function clearUploadState(imageId: string): void {
     const uploadsByImageId = { ...state.uploadsByImageId };
     delete uploadsByImageId[imageId];
     return { uploadsByImageId };
+  });
+}
+
+/** "45%" while any of these attachments is still uploading, otherwise null. */
+export function usePendingAttachmentUploadProgress(
+  attachmentIds: ReadonlyArray<string>,
+): string | null {
+  return useAttachmentUploadStore((state) => {
+    const pending = pendingAttachmentUploadProgress(attachmentIds, state.uploadsByImageId);
+    return pending === null ? null : formatAttachmentUploadProgress(pending);
   });
 }
 

@@ -44,6 +44,11 @@ import {
   waitForRevertedMessage,
 } from "../ChatView.logic";
 import { readPreparedConnection } from "../../state/session";
+import {
+  previewAnnotationContextRecord,
+  reviewCommentContextRecord,
+  terminalContextRecord,
+} from "../../lib/composerContextRecords";
 import { recallableComposerPrompt } from "./composerPromptHistory";
 
 // Kept per route so a send in flight, and the multiple-model selections, survive
@@ -251,26 +256,79 @@ export async function rewindToMessage(input: {
   }
 }
 
+/** The failed send's items first, then the newer draft's, one per context id. */
+function mergeByContextId<T>(
+  failed: ReadonlyArray<T>,
+  current: ReadonlyArray<T>,
+  contextId: (item: T) => string,
+): T[] {
+  const failedIds = new Set(failed.map(contextId));
+  return [...failed, ...current.filter((item) => !failedIds.has(contextId(item)))];
+}
+
 /**
- * Writes a failed send's composer contents back into its draft. Returns the
- * restored images, which are fresh copies so their preview URLs outlive the
- * optimistic row that held the originals.
+ * Writes a failed send's composer contents back into its draft, ahead of anything typed since.
+ * Images are fresh copies so their preview URLs outlive the optimistic row that held the
+ * originals.
  */
 export function restoreComposerDraft(
   draftTarget: ScopedThreadRef | DraftId,
   snapshot: ComposerSendSnapshot,
-): ComposerImageAttachment[] {
+): void {
   const store = useComposerDraftStore.getState();
-  const images = snapshot.images.map(cloneComposerImageForRetry);
-  store.setPrompt(draftTarget, snapshot.messageText);
-  store.addImages(draftTarget, images);
-  store.addFiles(draftTarget, snapshot.files);
-  store.setTerminalContexts(draftTarget, snapshot.terminalContexts);
-  store.setPreviewAnnotations(draftTarget, snapshot.previewAnnotations);
-  store.setReviewComments(draftTarget, snapshot.reviewComments);
-  store.setThreadContexts(draftTarget, snapshot.threadContexts);
-  store.setEnvironmentContexts(draftTarget, snapshot.environmentContexts);
-  return images;
+  const current = store.getComposerDraft(draftTarget);
+  const currentPrompt = current?.prompt ?? "";
+  store.setPrompt(
+    draftTarget,
+    currentPrompt.trim().length > 0
+      ? `${snapshot.messageText}\n\n${currentPrompt}`
+      : snapshot.messageText,
+  );
+  // Each id is its own attachment the prompt references, even when a newer one looks the same.
+  store.addImages(draftTarget, snapshot.images.map(cloneComposerImageForRetry), {
+    allowDuplicates: true,
+  });
+  store.addFiles(draftTarget, snapshot.files, { allowDuplicates: true });
+  store.setTerminalContexts(
+    draftTarget,
+    mergeByContextId(
+      snapshot.terminalContexts,
+      current?.terminalContexts ?? [],
+      (context) => terminalContextRecord(context).contextId,
+    ),
+  );
+  store.setPreviewAnnotations(
+    draftTarget,
+    mergeByContextId(
+      snapshot.previewAnnotations,
+      current?.previewAnnotations ?? [],
+      (annotation) => previewAnnotationContextRecord(annotation).contextId,
+    ),
+  );
+  store.setReviewComments(
+    draftTarget,
+    mergeByContextId(
+      snapshot.reviewComments,
+      current?.reviewComments ?? [],
+      (comment) => reviewCommentContextRecord(comment).contextId,
+    ),
+  );
+  store.setThreadContexts(
+    draftTarget,
+    mergeByContextId(
+      snapshot.threadContexts,
+      current?.threadContexts ?? [],
+      (record) => record.contextId,
+    ),
+  );
+  store.setEnvironmentContexts(
+    draftTarget,
+    mergeByContextId(
+      snapshot.environmentContexts,
+      current?.environmentContexts ?? [],
+      (record) => record.contextId,
+    ),
+  );
 }
 
 export interface MultipleModelTarget {

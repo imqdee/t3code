@@ -45,6 +45,28 @@ export function attachmentUploadBlockReason(input: {
   return null;
 }
 
+/** Combined progress of these attachments while any is still uploading, otherwise null. */
+export function pendingAttachmentUploadProgress(
+  attachmentIds: ReadonlyArray<string>,
+  uploadsByImageId: Readonly<Record<string, AttachmentUploadState>>,
+): number | null {
+  let tracked = 0;
+  let progress = 0;
+  let uploading = false;
+  for (const id of attachmentIds) {
+    const upload = uploadsByImageId[id];
+    if (upload === undefined) continue;
+    tracked += 1;
+    if (upload.status === "uploading") {
+      uploading = true;
+      progress += upload.progress;
+    } else if (upload.status === "ready") {
+      progress += 1;
+    }
+  }
+  return uploading ? progress / tracked : null;
+}
+
 export function formatAttachmentUploadProgress(progress: number): string {
   const bounded = Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
   return `${Math.floor(bounded * 100)}%`;

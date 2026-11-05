@@ -960,7 +960,8 @@ export function useComposerSend(input: ComposerSendInput) {
       composerFilesSnapshot.length > 0
         ? attachmentCapabilitiesBeforeUpload.supportsAttachmentUploads
         : (readEnvironmentPresentation(environmentId)?.serverConfig ?? null) !== null;
-    if (turnUsesAttachmentUploads && composerAttachmentsSnapshot.length > 0) {
+    const waitsForUploads = turnUsesAttachmentUploads && composerAttachmentsSnapshot.length > 0;
+    if (waitsForUploads) {
       for (const attachment of composerAttachmentsSnapshot) {
         const upload =
           readAttachmentUpload(attachment.id)?.status === "failed"
@@ -972,19 +973,16 @@ export function useComposerSend(input: ComposerSendInput) {
           draftTarget: composerDraftTarget,
         });
       }
-      await awaitAttachmentUploads(composerAttachmentsSnapshot.map((attachment) => attachment.id));
-      const attachmentCapabilitiesAfterUpload = readLiveAttachmentCapabilities();
-      if (attachmentCapabilitiesAfterUpload.fileBlockReason !== null) {
-        sendInFlightRef.current = false;
-        setThreadError(threadIdForSend, attachmentCapabilitiesAfterUpload.fileBlockReason);
-        return;
-      }
-      if (getUploadedAttachments({ environmentId, images: composerAttachmentsSnapshot }) === null) {
-        sendInFlightRef.current = false;
-        setThreadError(threadIdForSend, "Retry or remove failed uploads before sending.");
-        return;
-      }
     }
+    // The message posts now and the turn starts once uploads settle. Never rejects.
+    const uploadFailure = waitsForUploads
+      ? awaitAttachmentUploads(composerAttachmentsSnapshot.map((attachment) => attachment.id)).then(
+          () =>
+            getUploadedAttachments({ environmentId, images: composerAttachmentsSnapshot }) === null
+              ? "Retry or remove failed uploads before sending."
+              : null,
+        )
+      : Promise.resolve(null);
 
     if (
       multipleModelSelections === null &&
@@ -1027,6 +1025,18 @@ export function useComposerSend(input: ComposerSendInput) {
         currentThreadKey === activeThreadKey ? null : currentThreadKey,
       );
       return;
+    }
+    // A redirect declines approvals, which cannot be undone, so its uploads must land first.
+    if (waitsForUploads && (sendCtx?.shownPendingApprovalIds.length ?? 0) > 0) {
+      const failure = await uploadFailure;
+      if (failure !== null) {
+        sendInFlightRef.current = false;
+        setThreadError(threadIdForSend, failure);
+        setDockedDraftHeroThreadKey((currentThreadKey) =>
+          currentThreadKey === activeThreadKey ? null : currentThreadKey,
+        );
+        return;
+      }
     }
     // A message sent while approvals are pending redirects the agent. They are declined only
     // here, after everything above has accepted the send, so local commands and rejected
@@ -1169,11 +1179,16 @@ export function useComposerSend(input: ComposerSendInput) {
       );
     }
 
-    const turnAttachmentsPromise = prepareTurnAttachments({
-      environmentId,
-      attachments: composerAttachmentsSnapshot,
-      usesAttachmentUploads: turnUsesAttachmentUploads,
+    const turnAttachmentsPromise = uploadFailure.then((failure) => {
+      if (failure !== null) throw new Error(failure);
+      return prepareTurnAttachments({
+        environmentId,
+        attachments: composerAttachmentsSnapshot,
+        usesAttachmentUploads: turnUsesAttachmentUploads,
+      });
     });
+    // Awaited after other steps; a failed upload must not surface as unhandled meanwhile.
+    void turnAttachmentsPromise.catch(() => undefined);
     if (multipleModelSelections !== null) {
       await sendToMultipleModels({
         threadId: threadIdForSend,
@@ -1450,7 +1465,9 @@ export function useComposerSend(input: ComposerSendInput) {
         );
         clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
       }
+      // A turn that never left (its uploads failed) comes back even over a draft typed since.
       if (
+        turnAttachmentsResult._tag === "Failure" ||
         !composerDraftHasUserContent(
           useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
         )
@@ -1461,15 +1478,16 @@ export function useComposerSend(input: ComposerSendInput) {
         });
         // The restored draft clones its images, so the sent copies are no longer used.
         optimisticBlobPreviews.release(optimisticMessage);
-        const retryComposerImages = restoreComposerDraft(composerDraftTarget, sendSnapshot);
-        if (currentRouteThreadKeyRef.current === routeThreadKey) {
-          promptRef.current = messageTextForSend;
-          composerImagesRef.current = retryComposerImages;
-          composerFilesRef.current = composerFilesSnapshot;
-          composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
+        restoreComposerDraft(composerDraftTarget, sendSnapshot);
+        const restored = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+        if (restored && currentRouteThreadKeyRef.current === routeThreadKey) {
+          promptRef.current = restored.prompt;
+          composerImagesRef.current = restored.images;
+          composerFilesRef.current = restored.files;
+          composerTerminalContextsRef.current = restored.terminalContexts;
           composerRef.current?.resetCursorState({
-            cursor: collapseExpandedComposerCursor(messageTextForSend, messageTextForSend.length),
-            prompt: messageTextForSend,
+            cursor: collapseExpandedComposerCursor(restored.prompt, messageTextForSend.length),
+            prompt: restored.prompt,
             detectTrigger: true,
           });
         }

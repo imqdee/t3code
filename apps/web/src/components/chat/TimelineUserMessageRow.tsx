@@ -29,6 +29,7 @@ import ChatMarkdown from "../ChatMarkdown";
 import {
   CalendarClockIcon,
   ChevronDownIcon,
+  Clock3Icon,
   DownloadIcon,
   EyeIcon,
   type LucideIcon,
@@ -56,6 +57,7 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import { promptLinkFor } from "../promptLinks/copyPromptLink";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { formatBytes } from "../../lib/formatBytes";
+import { usePendingAttachmentUploadProgress } from "../../lib/attachmentUploadQueue";
 import { shouldCollapseUserMessage } from "./MessagesTimeline.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
@@ -416,6 +418,27 @@ function UserMessageProjectedStatus({ row }: { row: Extract<TimelineRow, { kind:
       <span className="rounded-full border border-destructive/25 bg-destructive/8 px-1.5 py-0.5 text-3xs font-medium text-destructive">
         {status}
       </span>
+    </div>
+  );
+}
+
+/** A sent message whose turn starts once its attachments finish uploading. */
+function UserMessageUploadStatus({
+  attachments,
+}: {
+  readonly attachments: ReadonlyArray<{ readonly id: string }>;
+}) {
+  const progress = usePendingAttachmentUploadProgress(
+    attachments.map((attachment) => attachment.id),
+  );
+  if (progress === null) return null;
+  return (
+    <div
+      className="me-1 flex items-center gap-1 text-xs leading-none text-muted-foreground tabular-nums"
+      data-user-message-upload-status
+    >
+      <Clock3Icon aria-hidden className="size-3" />
+      Sends when uploads finish · {progress}
     </div>
   );
 }
@@ -1027,6 +1050,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         ) : null}
       </div>
       <UserMessageProjectedStatus row={row} />
+      {row.message.attachments?.length ? (
+        <UserMessageUploadStatus attachments={row.message.attachments} />
+      ) : null}
       {!folded || expanded ? (
         <div
           className={cn(
